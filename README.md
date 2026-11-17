@@ -1,0 +1,142 @@
+# Video dubbing: English video to Indian languages
+
+Dubs one English video into any number of Indian languages and writes, per language, an **AI-dubbed** MP4 with synced speech, an SRT file and a per-sentence JSON, plus the English transcript and a machine-readable `report.json`. Every speech-to-text, translation and speech call goes to a Bodhan model (Indic-Transcribe, Indic-Translate, Indic-Speak). An optional OpenAI-compatible LLM judges and edits **English only**. A Vani-style web studio sits on top of the same pipeline so a person can review and fix any sentence.
+
+> The output is AI-generated speech from a fixed voice library. It does not clone or imitate the original speaker.
+
+## Setup
+
+Requires Python 3.10+ and **ffmpeg** (with ffprobe) on the PATH. A `Dockerfile` is included.
+
+```bash
+make setup                  # pip install -r requirements-dev.txt && pip install -e .
+cp .env.example .env        # then fill in the keys
+```
+
+| Variable | Purpose |
+|---|---|
+| `BODHAN_TRANSCRIBE_KEY`, `BODHAN_TRANSLATE_KEY`, `BODHAN_SPEAK_KEY` | one key per Bodhan model (or a single `BODHAN_API_KEY` for all three) |
+| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | any OpenAI-compatible endpoint. Optional: without it every LLM decision has a deterministic fallback |
+
+## Run
+
+```bash
+python -m bodhan_dub \
+  --input path/to/video.mp4 \
+  --langs hi,ta,bn \
+  --out ./out \
+  [--glossary glossary.yaml] [--voices voices.yaml] [--code-mixed] [--style "educational lecture"]
+```
+
+`--langs` accepts any Indic-Speak language code: `hi bn ta te mr gu kn ml pa or as ur ne sa sd ks kok mai doi mni brx sat`. Exit code is non-zero if any language failed; partial outputs and the report are still written. Re-running the same command is nearly free: every Bodhan call is cached on disk under `out/work/cache`.
+
+```
+out/
+  report.json              per-language status, timings, retries, QA, cost, targets missed and why
+  transcript.en.json       English sentences with start/end, speaker, glossary
+  run.log.jsonl            structured log: one record per stage, per segment attempt, per API retry
+  hi/ video.hi.mp4  subtitles.hi.srt  segments.hi.json
+  ta/ ...
+```
+
+`glossary.yaml` (optional) pins terms; `voices.yaml` (optional) picks voices:
+
+```yaml
+terms:
+  - term: Pythagoras theorem
+    translations: {hi: "पाइथागोरस प्रमेय"}     # your own rendering is substituted before translation
+speakers: {S1: Kavya, S2: Amit}                  # or per language: languages: {ta: {female: Anitha}}
+```
+
+### Web studio
+
+```bash
+python -m bodhan_dub.web --port 8000     # open http://localhost:8000
+```
+
+Upload a video, tick the languages, and watch the progress. Then for each language:
+
+- **Sentences**: every sentence with check badges (sync offset, how the fit was achieved, speed, back-transcription error rate, repeat/omission flags, retries), a play button, and **Why?**, which shows every attempt and what the speech model actually said. **Edit** changes the English (re-translated by Indic-Translate), types your own target text, picks voice and style, and sets speed within 0.85-1.2x. Only that line is re-voiced; the rest comes from cache.
+- **Timeline**: dubbed video with English speech, dub and untouched (non-speech) lanes and live captions.
+- **Glossary & voices**: pin terms per language; choose a voice per speaker.
+- **Report & export**: targets table, misses with reasons, costs, downloads.
+
+The web layer holds no dubbing logic. It starts `run_pipeline`, reads its logs and report, and saves edits as `overrides.json` that the next run applies. Keys stay on the server.
+
+## How it works
+
+```mermaid
+flowchart LR
+  V[Input video] --> A[ffmpeg: audio extract]
+  A --> VAD[Adaptive energy VAD + chunker]
+  VAD -->|"<=25 s chunks"| STT[Indic-Transcribe]
+  STT --> G[LLM: group into sentences]
+  G --> GL[LLM: glossary]
+  G --> SP[Pitch-based speaker split]
+  GL & SP & G --> SRC[(source.json)]
+  SRC --> L1 & L2 & L3
+  subgraph L[Per language, in parallel]
+    L1[Translate: Indic-Translate] --> L2[Speak: Indic-Speak] --> L3[Fit ladder + QA loop]
+  end
+  L3 --> MIX[Mix: gated original + dub at -16 LUFS]
+  MIX --> MUX[ffmpeg mux to MP4 + SRT]
+  MUX --> R[report.json, segments.json]
+  C[(On-disk cache)] -.-> STT & L1 & L2
+  UI[Web studio] -.reads logs and report, writes overrides.-> R
+```
+
+Stage by stage:
+
+1. **Probe and extract**: duration, 16 kHz mono audio.
+2. **Voice activity**: an adaptive energy detector (no ASR model) finds speech. The threshold is relative to the clip, so a constant music bed stays under it. Flat-energy stretches are rejected as music or hum.
+3. **Chunking**: cut at pauses of 0.6 s or more, never inside speech, up to 25 s per chunk. Longer unbroken speech is split at its largest internal pause; a hard split is flagged.
+4. **Transcribe** each chunk with Indic-Transcribe (text only, so segment timestamps come from the VAD chunk boundaries).
+5. **Sentence grouping**: the LLM regroups fragments into whole sentences; a deterministic fallback uses punctuation and pauses. Invalid LLM output is rejected.
+6. **Glossary and speakers**: LLM-extracted terms plus yours; speakers grouped by pitch.
+7. **Translate** each sentence with Indic-Translate; your glossary renderings are substituted before translation, and pinned terms and numbers are checked after.
+8. **Speak** with Indic-Speak in short pieces (a sentence at a time).
+9. **Fit ladder**: fits, then borrows the pause after the line, then starts a little early (within 250 ms), then stretches up to 1.2x, then asks the LLM to shorten the English and re-translates. Speed never exceeds 1.2x.
+10. **QA loop**: the dubbed audio is transcribed back with Indic-Transcribe. Character error rate against the translation is recorded. A repeated phrase, a missing tail or a large mismatch triggers a re-voice with finer pieces; the best attempt wins.
+11. **Mix**: the original soundtrack is silenced only where English speech was; music and effects elsewhere stay. Dubbed speech is normalized to -16 LUFS with a peak limiter.
+12. **Mux, subtitles, report.**
+
+Deploy (Vercel + Render): [DEPLOY.md](DEPLOY.md). More detail: [docs/design_notes.md](docs/design_notes.md) (design notes and flow chart), [docs/PR_DESCRIPTION.md](docs/PR_DESCRIPTION.md).
+
+## Where the LLM is used
+
+Grouping sentences, extracting a glossary, shortening an over-long English sentence, and judging a borderline dubbed line from its back-transcript. It reads and writes English only; any output containing Indic script is rejected. Each decision has a deterministic fallback, and the whole pipeline runs with no LLM.
+
+## Bodhan models
+
+| Model | Mode | Used for |
+|---|---|---|
+| Indic-Transcribe | hosted | English source (`language=en`) and back-transcription of the dub (`language=<target>`) |
+| Indic-Translate | hosted | every translation, including glossary terms; `script=codemix` with `--code-mixed` |
+| Indic-Speak | hosted | all speech; the language's own recorded voices; optional `style` |
+
+## Tests
+
+```bash
+make check      # ruff + 41 tests
+```
+
+Unit tests cover segmentation, the VAD, timing ladder, QA, glossary, voices and the LLM guardrails. Integration tests, including the 30-second smoke test, run the whole pipeline against an in-process **fake** Bodhan API (`tests/fake_bodhan.py`) with injected faults: repeated speech, truncated speech, a failing language, over-long lines, non-speech stretches, cache reuse and manual overrides. The fake is a test double only; the pipeline never falls back to it.
+
+## Limitations (stated honestly)
+
+- **Not yet calibrated on real API output.** The tests prove the logic against a fake, not Bodhan's real behaviour. The QA threshold (`BODHAN_DUB_CER_FAIL`, default 0.35) and the repeat/omission ratios should be tuned on a few real runs.
+- **Speaker separation is a pitch heuristic** (at most two speakers, male/female by median pitch). Similar voices or more than two speakers will be merged. Override in `voices.yaml` or the web studio.
+- **Music under speech is lost.** There is no source separation, so while someone speaks the original background is silenced and only the dub plays. Music and effects between speech are kept.
+- **Loud music with no gaps** can defeat the energy detector. Flat-energy and implausible-transcript guards reduce, but do not eliminate, narration over music.
+- **Glossary enforcement is partial.** Terms with your own rendering are substituted before translation. Other pinned terms are only checked and flagged (`term_variant`), because only Indic-Translate may write Indian-language text.
+- **Subtitles are one cue per sentence**, wrapped at 42 characters, not split to reading speed.
+- Not implemented: on-screen text translation (Indic-OCR), "my narration" recording.
+- The web studio runs one job at a time and has no authentication; run it locally.
+
+## Cost and runtime
+
+Hosted prices: Indic-Transcribe ₹0.10 per audio minute, Indic-Translate ₹0.20 per 10,000 output tokens, Indic-Speak ₹6 per 10,000 input characters. Speech dominates. Rough estimate for a talking-head lesson (about 130 English words a minute, so roughly 700 Indian-language characters of speech a minute): about ₹0.45 speech, ₹0.10 back-transcription, under ₹0.02 translation, plus retries, so **about ₹0.6 per video minute per language**, plus ₹0.10 per video minute once for the English source. A 5-minute video in 3 languages is therefore around ₹9-10, close to the ₹10 starter credit, so rely on the cache and ask for more credit before repeated full runs. These are estimates; `report.json` records the real cost per language. Runtime is bounded by API calls (about 3-4 per sentence per language) at `--concurrency` 4; measure it on a real run.
+
+## AI assistance
+
+Built with Claude Code (Claude Sonnet) as a pair programmer for the pipeline, tests, web studio and docs. All code was reviewed and run; the author must be able to explain every line.

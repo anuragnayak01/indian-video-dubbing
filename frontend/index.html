@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bodhan Dub Studio</title>
+<style>
+:root{--bg:#000;--p:#121212;--p2:#1a1a1a;--line:#262626;--tx:#f2f2f2;--mut:#8d8d8d;--ac:#9ec5fe;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 Inter,system-ui,"Noto Sans","Noto Sans Devanagari","Noto Sans Tamil","Noto Sans Bengali",sans-serif}
+a{color:var(--ac);cursor:pointer;text-decoration:none}button,select,input,textarea{font:inherit;color:var(--tx)}
+nav{display:flex;gap:22px;align-items:center;padding:14px 32px;border-bottom:1px solid var(--line)}nav b{font-size:18px}nav a{color:var(--mut)}nav a.on{color:var(--tx)}
+.sp{flex:1}.pill{border-radius:999px;background:var(--p2);padding:3px 12px;font-size:12px;color:var(--mut)}
+main{max-width:1240px;margin:0 auto;padding:28px 32px 80px}
+.btn{background:var(--ac);color:#0a1a33;border:0;border-radius:999px;padding:9px 20px;cursor:pointer}.btn.g{background:var(--p2);color:var(--tx)}.btn.sm{padding:4px 12px;font-size:12px}.btn:disabled{opacity:.4;cursor:default}
+.card{background:var(--p);border:1px solid var(--line);border-radius:14px;padding:16px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:16px}
+.mut{color:var(--mut)}h1{font-size:54px;line-height:1.05;margin:8px 0 14px;background:linear-gradient(#fff,#b5b5b5);-webkit-background-clip:text;color:transparent}h2{margin:0 0 4px;font-size:22px}h3{margin:0 0 10px;font-size:15px}
+.hero{text-align:center;padding:26px 0 34px}.hero p{max-width:560px;margin:0 auto 22px;color:var(--mut)}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+input[type=text],select,textarea{background:var(--p2);border:1px solid var(--line);border-radius:10px;padding:8px 10px;width:100%}textarea{min-height:64px;resize:vertical}
+.drop{border:1.5px dashed #333;border-radius:14px;padding:38px;text-align:center}.drop.over{border-color:var(--ac)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}.chip{border:1px solid var(--line);background:var(--p);border-radius:999px;padding:5px 14px;cursor:pointer;user-select:none}.chip.on{border-color:var(--ac);background:#14243a;color:var(--ac)}
+.tabs{display:flex;gap:4px;background:var(--p);border-radius:10px;padding:3px}.tabs a{padding:6px 16px;border-radius:8px;color:var(--mut)}.tabs a.on{background:#2a2a2a;color:var(--tx)}
+table{width:100%;border-collapse:collapse}td,th{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{color:var(--mut);font-weight:500;font-size:12px}
+.b{display:inline-block;font-size:11px;border-radius:999px;padding:1px 8px;margin:0 4px 3px 0;background:#242424;color:#cfcfcf}.b.ok{background:#17301f;color:var(--ok)}.b.warn{background:#3a2e12;color:var(--warn)}.b.bad{background:#3a1c1c;color:var(--bad)}
+.tr{font-size:15px}.en{color:var(--mut);font-size:12px}.edit{background:var(--p2);border-radius:12px;padding:14px;margin:4px 0 10px}.edit label{display:block;font-size:12px;color:var(--mut);margin:8px 0 4px}
+.steps div{display:flex;padding:7px 0;border-bottom:1px solid var(--line)}.steps .p{color:var(--mut)}.bar{height:3px;background:var(--line);border-radius:2px;margin:6px 0}.bar i{display:block;height:3px;background:var(--ac);border-radius:2px;transition:.4s}
+.lane{position:relative;height:30px;background:#151515;border-radius:6px;margin:6px 0 6px 92px}.lane .lab{position:absolute;left:-92px;top:5px;width:86px;color:var(--mut);font-size:12px}
+.lane i{position:absolute;top:3px;bottom:3px;border-radius:4px;background:#2f6b4a;overflow:hidden;white-space:nowrap;font-size:10px;font-style:normal;padding:3px 4px;cursor:pointer}
+.lane i.o{background:#3a3a3a}.lane i.w{background:#8a6a14}.lane i.f{background:#7a2c2c}.lane i.s{background:repeating-linear-gradient(45deg,#222,#222 4px,#2c2c2c 4px,#2c2c2c 8px);color:#888}
+.ph{position:absolute;top:-2px;bottom:-2px;width:2px;background:#fff;z-index:3;pointer-events:none}
+.warn-box{background:#3a2e12;color:var(--warn);border-radius:10px;padding:10px 14px;margin-bottom:14px}.err-box{background:#3a1c1c;color:var(--bad);border-radius:10px;padding:10px 14px;margin-bottom:14px}
+video{width:100%;max-height:380px;background:#000;border-radius:10px}.cap{min-height:26px;text-align:center;margin-top:8px;font-size:16px}
+</style></head><body>
+<nav><b>Bodhan Dub Studio</b><a data-r="">Projects</a><a data-r="new">New project</a><span class="sp"></span><span class="pill">AI-dubbed output · Bodhan models only</span></nav>
+<main id="app"></main>
+<script src="config.js"></script>
+<script>
+const BASE=(window.DUB_API||'').replace(/\/$/,'')
+const tok=()=>{try{return localStorage.getItem('dub_token')||''}catch{return ''}}
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)]
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+async function api(u,o={}){o={...o,headers:{...(o.headers||{}),'X-Access-Token':tok()}};const r=await fetch(BASE+'/api'+u,o);if(r.status===401){const t=prompt('Access token for this server:');if(t){try{localStorage.setItem('dub_token',t)}catch{}return api(u,o)}}if(!r.ok){let m=r.statusText;try{m=(await r.json()).detail||m}catch{}throw new Error(m)}return r.json()}
+const jput=(u,b,method='PUT')=>api(u,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
+const mmss=t=>`${Math.floor(t/60)}:${(t%60).toFixed(1).padStart(4,'0')}`
+let CFG,P=null,LANG=null,TAB='sentences',TIMER=null,DATA={},PREV='idle'
+const ALLV=()=>[...new Set(Object.values(CFG.voices).flatMap(v=>[...v.female,...v.male]))]
+const lname=c=>CFG.languages.find(l=>l.code==c)?.label||c
+document.querySelectorAll('nav a').forEach(a=>a.onclick=()=>location.hash=a.dataset.r?'#'+a.dataset.r:'#')
+window.onhashchange=route
+async function route(){clearInterval(TIMER);const [v,id,l,t]=location.hash.slice(1).split('/');$$('nav a').forEach(a=>a.classList.toggle('on',a.dataset.r==(v||'')));
+ if(v=='new')return renderNew();if(v=='p'&&id){LANG=l||LANG;TAB=t||TAB;return openProject(id)}return renderHome()}
+
+// ---------------- home
+async function renderHome(){const ps=await api('/projects');$('#app').innerHTML=`<div class="hero"><h1>Every voice.<br>Every Indian language.</h1><p>Upload an English video, pick the languages, and review every dubbed sentence: translation, voice, style and speed, with the checks that caught repeats, gaps and drift.</p><button class="btn" onclick="location.hash='#new'">Start a new project</button></div>
+<h2>Your projects</h2><div class="mut" style="margin-bottom:14px">${CFG.missing_keys.length?'':'Keys loaded · '}${CFG.llm?'LLM connected':'No LLM configured (heuristic fallbacks are used)'}</div>
+${CFG.missing_keys.length?`<div class="err-box">Missing environment variables: ${CFG.missing_keys.join(', ')}. Add them to .env and restart.</div>`:''}
+${ps.length?`<div class="grid">${ps.map(p=>`<div class="card"><b>${esc(p.name)}</b><div class="mut">${p.langs.map(lname).join(', ')}</div><div class="row" style="margin-top:12px"><span class="pill">${p.job}</span><span class="sp"></span><button class="btn g sm" onclick="location.hash='#p/${p.id}'">Open</button><a onclick="delP('${p.id}')">Delete</a></div></div>`).join('')}</div>`:'<div class="card mut">No projects yet.</div>'}`}
+async function delP(id){if(confirm('Delete this project and its outputs?')){await api('/projects/'+id,{method:'DELETE'});renderHome()}}
+
+// ---------------- new project
+let NEW={langs:new Set(['hi','ta','bn']),file:null}
+function renderNew(){$('#app').innerHTML=`<h2>New project</h2><div class="mut" style="margin-bottom:18px">Choose a video, the languages to dub into, and how it should sound.</div><div style="max-width:760px">
+<div class="card" style="margin-bottom:16px"><h3>1 · Video (MP4, MOV, MKV or WebM, 1–15 minutes)</h3><div class="drop" id="drop"><div id="fn">${NEW.file?esc(NEW.file.name):'Drop a video here'}</div><p><button class="btn g" onclick="$('#f').click()">Choose a file</button></p></div><input id="f" type="file" accept="video/*,.mkv" hidden></div>
+<div class="card" style="margin-bottom:16px"><h3>2 · Dub into</h3><div class="chips" id="chips">${CFG.languages.map(l=>`<span class="chip ${NEW.langs.has(l.code)?'on':''}" data-c="${l.code}">${l.label}</span>`).join('')}</div>
+<p class="row"><label><input type="checkbox" id="cm"> Code-mixed output (e.g. Hinglish)</label></p></div>
+<div class="card" style="margin-bottom:16px"><h3>3 · Voice style (optional)</h3><select id="st"><option value="">Neutral (voice default)</option>${CFG.styles.map(s=>`<option>${esc(s)}</option>`).join('')}</select><div class="mut" style="margin-top:6px">Each speaker gets a consistent voice from the Indic-Speak library; change voices per speaker later.</div></div>
+<div class="card" style="margin-bottom:16px"><h3>4 · Name</h3><input type="text" id="nm" placeholder="Project name"></div>
+<button class="btn" id="go">Create and generate</button> <span id="err" style="color:var(--bad)"></span></div>`;
+ const pick=f=>{NEW.file=f;$('#fn').textContent=f.name}
+ $('#f').onchange=e=>e.target.files[0]&&pick(e.target.files[0]);const d=$('#drop');d.ondragover=e=>{e.preventDefault();d.classList.add('over')};d.ondragleave=()=>d.classList.remove('over');d.ondrop=e=>{e.preventDefault();d.classList.remove('over');e.dataTransfer.files[0]&&pick(e.dataTransfer.files[0])}
+ $$('.chip').forEach(c=>c.onclick=()=>{const k=c.dataset.c;NEW.langs.has(k)?NEW.langs.delete(k):NEW.langs.add(k);c.classList.toggle('on')})
+ $('#go').onclick=async()=>{if(!NEW.file)return $('#err').textContent='Choose a video first';if(!NEW.langs.size)return $('#err').textContent='Pick at least one language';
+  const fd=new FormData();fd.append('file',NEW.file);fd.append('langs',[...NEW.langs].join(','));fd.append('name',$('#nm').value);fd.append('code_mixed',$('#cm').checked);fd.append('style',$('#st').value);
+  $('#go').disabled=true;$('#go').textContent='Uploading…';try{const p=await api('/projects',{method:'POST',body:fd});NEW.file=null;location.hash='#p/'+p.id}catch(e){$('#err').textContent=e.message;$('#go').disabled=false;$('#go').textContent='Create and generate'}}}
+
+// ---------------- project
+async function openProject(id){await refresh(id,true);TIMER=setInterval(()=>refresh(id,false),1500)}
+async function refresh(id,force){let p;try{p=await api('/projects/'+id)}catch(e){return $('#app').innerHTML=`<div class="err-box">${esc(e.message)}</div>`}
+ const prev=P?.job?.state,wasRunning=prev=='running'||prev=='queued';P=p;const st=p.job.state,running=st=='running'||st=='queued'
+ if(!LANG||!p.langs.includes(LANG))LANG=p.langs[0]
+ if(force||(wasRunning&&!running)){DATA={};await paint()}else if(running){$('#prog')?paintProgress():await paint()}}
+function stepsHtml(){const g=P.progress,names=[['probe','Reading video'],['vad','Finding speech'],['transcribe','Transcribing English'],['group_sentences','Grouping sentences'],['glossary','Building glossary']]
+ return `<div class="steps">${names.map(([k,n])=>`<div class="${g.source_stages.includes(k)?'':'p'}"><span class="sp">${g.source_stages.includes(k)?'✓':'·'} ${n}</span></div>`).join('')}${Object.entries(g.languages).map(([l,x])=>{const pc=x.total?Math.round(100*x.done/x.total):0;return `<div><span class="sp">${lname(l)} — ${x.stage=='segments'||x.stage=='translate+speak'?'translating & voicing':x.stage} ${x.total?`${x.done}/${x.total}`:''}${x.retries?` · ${x.retries} retries`:''}</span><span style="width:160px"><div class="bar"><i style="width:${x.stage=='done'?100:pc}%"></i></div></span></div>`}).join('')}${g.api_retries?`<div class="mut">${g.api_retries} API retries (rate limit / transient errors) handled</div>`:''}</div>`}
+function paintProgress(){const el=$('#prog');if(el)el.innerHTML=stepsHtml()}
+async function paint(){const p=P,st=p.job.state,running=st=='running'||st=='queued'
+ $('#app').innerHTML=`<div class="row"><div><a onclick="location.hash='#'" class="mut">‹ Projects</a><h2>${esc(p.name)}</h2><div class="mut">${p.report?.source?`${mmss(p.report.source.duration)} · ${p.report.source.segments} sentences · ${p.report.source.speakers.length} speaker(s) · sentences grouped by ${p.report.source.grouping}`:'analysing…'}</div></div><span class="sp"></span><span class="pill">${st}</span></div>
+ ${st=='error'?`<div class="err-box">${esc(p.job.error)}</div>`:''}${p.report?.source?.warnings?.length?p.report.source.warnings.map(w=>`<div class="warn-box">${esc(w)}</div>`).join(''):''}
+ ${running?`<div class="card" style="margin:14px 0"><h3>${p.report?'Applying your changes':'Dubbing'}…</h3><div id="prog">${stepsHtml()}</div></div>`:''}
+ <div class="row" style="margin:16px 0"><div class="tabs">${p.langs.map(l=>`<a class="${l==LANG?'on':''}" onclick="go('${l}','${TAB}')">${lname(l)}</a>`).join('')}</div><span class="sp"></span><div class="tabs">${[['sentences','Sentences'],['timeline','Timeline'],['terms','Glossary & voices'],['report','Report & export']].map(([k,n])=>`<a class="${k==TAB?'on':''}" onclick="go('${LANG}','${k}')">${n}</a>`).join('')}</div></div><div id="pane"></div>`
+ if(!running)await pane()}
+function go(l,t){LANG=l;TAB=t;history.replaceState(null,'',`#p/${P.id}/${l}/${t}`);paint()}
+async function langData(){if(!DATA[LANG]){try{DATA[LANG]=await api(`/projects/${P.id}/lang/${LANG}`)}catch{DATA[LANG]=null}}return DATA[LANG]}
+async function pane(){const el=$('#pane');if(!el)return;if(TAB=='terms')return termsPane(el);if(TAB=='report')return reportPane(el)
+ const d=await langData();if(!d){el.innerHTML='<div class="card mut">Nothing to show for this language yet.</div>';return}
+ if(TAB=='timeline')return timelinePane(el,d);sentencesPane(el,d)}
+
+// ---- sentences
+const ACT={fit:'fits',borrow_gap:'uses pause after',lead:'starts slightly early',stretch:'sped up',condense:'too long',manual_speed:'manual speed'}
+function badges(s){const q=s.qa||{},b=[];b.push(`<span class="b ${s.status=='dubbed'?'ok':s.status=='failed'?'bad':'warn'}">${s.status}</span>`)
+ if(s.action)b.push(`<span class="b ${s.action=='condense'?'warn':''}">${ACT[s.action]||s.action}${s.stretch&&s.stretch!=1?' ×'+s.stretch.toFixed(2):''}</span>`)
+ if(s.sync_offset_ms!=null)b.push(`<span class="b ${Math.abs(s.sync_offset_ms)>300?'bad':''}">sync ${s.sync_offset_ms>0?'+':''}${s.sync_offset_ms} ms</span>`)
+ if(q.cer!=null)b.push(`<span class="b ${q.cer>.2?'warn':''}">CER ${(q.cer*100).toFixed(0)}%</span>`)
+ const r=s.retries||{};if(r.tts)b.push(`<span class="b warn">${r.tts} re-voice</span>`);if(r.condense)b.push(`<span class="b warn">${r.condense} shortened</span>`)
+ ;(q.flags||[]).forEach(f=>b.push(`<span class="b bad">${f}</span>`));(s.notes||[]).forEach(n=>b.push(`<span class="b">${esc(n)}</span>`));return b.join('')}
+function sentencesPane(el,d){const ov=d.overrides||{};el.innerHTML=`<div class="card" style="padding:4px 12px"><table><tr><th style="width:90px">#  time</th><th style="width:300px">Checks</th><th>English → ${lname(LANG)}</th><th style="width:210px"></th></tr>${d.segments.map(s=>`<tr id="r${s.idx}"><td><b>${s.idx+1}</b><div class="mut">${mmss(s.start)}</div><div class="mut">${esc(s.speaker)}</div></td><td>${badges(s)}${ov[s.idx]?'<span class="b warn">edited</span>':''}</td>
+ <td><div class="tr" lang="${LANG}">${esc(s.translation)}</div><div class="en">${esc(s.source_text)}${s.english_used!=s.source_text?`<br>shortened to: ${esc(s.english_used)}`:''}</div></td>
+ <td style="text-align:right;white-space:nowrap"><button class="btn g sm" data-play="${s.idx}" ${s.status=='failed'?'disabled':''}>▶ Play</button> <button class="btn g sm" data-edit="${s.idx}">Edit</button> <button class="btn g sm" data-why="${s.idx}">Why?</button></td></tr><tr id="x${s.idx}" hidden><td colspan="4"></td></tr>`).join('')}</table></div>
+ ${d.skipped?.length?`<div class="mut" style="margin-top:12px">${d.skipped.length} stretch(es) with no speech left untouched: ${d.skipped.map(k=>`${mmss(k.start)} (${esc(k.reason)})`).join(', ')}</div>`:''}`
+ $$('[data-play]').forEach(b=>b.onclick=()=>{const a=new Audio(`${BASE}/api/projects/${P.id}/file/clip?lang=${LANG}&idx=${b.dataset.play}&t=${Date.now()}`);a.play()})
+ $$('[data-why]').forEach(b=>b.onclick=()=>toggle(b.dataset.why,'why',d));$$('[data-edit]').forEach(b=>b.onclick=()=>toggle(b.dataset.edit,'edit',d))}
+function toggle(i,kind,d){const row=$('#x'+i),s=d.segments[i];if(!row.hidden&&row.dataset.kind==kind){row.hidden=true;return}row.hidden=false;row.dataset.kind=kind
+ const c=row.firstElementChild;if(kind=='why'){c.innerHTML=`<div class="edit"><h3>Why this line sounds the way it does</h3><div class="en">Back-transcript of the dubbed audio: <span lang="${LANG}">${esc(s.back_transcript||'—')}</span></div>${s.error?`<div class="err-box">${esc(s.error)}</div>`:''}<table><tr><th>Round</th><th>Voice try</th><th>Raw length</th><th>Fit action</th><th>Speed</th><th>Error rate</th><th>Flags</th></tr>${(s.attempts||[]).map(a=>`<tr><td>${a.cond}</td><td>${a.tts}</td><td>${a.raw_s}s</td><td>${ACT[a.action]||a.action}</td><td>×${a.stretch}</td><td>${(a.cer*100).toFixed(0)}%</td><td>${a.flags.join(', ')||'ok'}</td></tr>`).join('')}</table><div class="en">Voice ${esc(s.voice)} · slot ${mmss(s.start)}–${mmss(s.end)} · audio ${s.audio_duration}s</div></div>`;return}
+ const ov=d.overrides[i]||{},voices=ALLV(),own=CFG.voices[LANG]||{female:[],male:[]}
+ c.innerHTML=`<div class="edit"><label>English (changing this re-translates with Indic-Translate)</label><textarea id="e_en">${esc(ov.english||s.source_text)}</textarea>
+ <label>${lname(LANG)} text (type your own to skip translation; leave unchanged to keep Indic-Translate's)</label><textarea id="e_tx" lang="${LANG}">${esc(ov.text||s.translation)}</textarea>
+ <div class="row" style="margin-top:8px"><div style="flex:1"><label>Voice</label><select id="e_vo">${voices.map(v=>`<option ${v==(ov.voice||s.voice)?'selected':''}>${v}</option>`).join('')}</select></div><div style="flex:1"><label>Style</label><select id="e_st"><option value="">Neutral</option>${CFG.styles.map(x=>`<option ${x==ov.style?'selected':''}>${esc(x)}</option>`).join('')}</select></div>
+ <div style="flex:1"><label>Speed <span id="e_sv">${ov.speed?'×'+ov.speed:'auto'}</span></label><input id="e_sp" type="range" min="${CFG.stretch[0]}" max="${CFG.stretch[1]}" step="0.01" value="${ov.speed||1}"><label><input type="checkbox" id="e_auto" ${ov.speed?'':'checked'}> automatic (fit to slot)</label></div></div>
+ <div class="row" style="margin-top:12px"><button class="btn sm" id="e_save">Save and re-voice</button><button class="btn g sm" id="e_reset">Reset line</button><span class="mut">Only this line is re-translated and re-voiced; everything else comes from the cache. Speed is limited to ${CFG.stretch[0]}–${CFG.stretch[1]}×.</span></div></div>`
+ const sp=$('#e_sp'),au=$('#e_auto');sp.oninput=()=>{au.checked=false;$('#e_sv').textContent='×'+(+sp.value).toFixed(2)};au.onchange=()=>$('#e_sv').textContent=au.checked?'auto':'×'+(+sp.value).toFixed(2)
+ const send=async body=>{try{await jput(`/projects/${P.id}/lang/${LANG}/segments/${i}`,body,'PATCH');DATA={};await refresh(P.id,true)}catch(e){alert(e.message)}}
+ $('#e_save').onclick=()=>{const b={};const en=$('#e_en').value.trim(),tx=$('#e_tx').value.trim();if(en!=s.source_text)b.english=en;if(tx!=s.translation)b.text=tx;b.voice=$('#e_vo').value;b.style=$('#e_st').value;if(!au.checked)b.speed=+sp.value;send(b)}
+ $('#e_reset').onclick=()=>send({reset:true})}
+
+// ---- timeline
+function timelinePane(el,d){const dur=P.transcript?.duration||d.segments.at(-1).end,pc=t=>100*t/dur
+ el.innerHTML=`<div class="card"><video id="vid" src="${BASE}/api/projects/${P.id}/file/video?lang=${LANG}" controls></video><div class="cap" id="cap" lang="${LANG}"></div><div class="row" style="justify-content:center;margin:6px 0"><button class="btn g sm" id="orig">Play original English</button><button class="btn g sm" id="dub">Play dubbed</button></div>
+ <div style="position:relative;margin-top:14px"><div style="position:relative"><div class="lane"><span class="lab">English speech</span>${(P.transcript?.segments||[]).map(s=>`<i class="o" data-t="${s.start}" style="left:${pc(s.start)}%;width:${pc(s.end-s.start)}%" title="${esc(s.text)}">${esc(s.text)}</i>`).join('')}</div>
+ <div class="lane"><span class="lab">${lname(LANG)} dub</span>${d.segments.filter(s=>s.placed_start!=null).map(s=>`<i class="${s.status=='dubbed'?'':s.status=='failed'?'f':'w'}" data-t="${s.placed_start}" style="left:${pc(s.placed_start)}%;width:${pc(s.audio_duration)}%" title="${esc(s.translation)}">${esc(s.translation)}</i>`).join('')}</div>
+ <div class="lane"><span class="lab">Left untouched</span>${(d.skipped||[]).map(k=>`<i class="s" data-t="${k.start}" style="left:${pc(k.start)}%;width:${Math.max(.6,pc(k.end-k.start))}%" title="${esc(k.reason)}"></i>`).join('')}</div>
+ <div class="ph" id="ph" style="left:92px"></div></div>
+ <div class="mut" style="margin-left:92px;font-size:12px">Original music and effects stay in place where nobody speaks; English speech is replaced by the dub. Grey hatched = no speech found, nothing was invented there.</div>
+ </div></div>`
+ const v=$('#vid'),cap=$('#cap'),ph=$('#ph');v.ontimeupdate=()=>{ph.style.left=`calc(92px + (100% - 92px) * ${v.currentTime/dur})`;const s=d.segments.find(s=>s.placed_start!=null&&v.currentTime>=s.placed_start&&v.currentTime<=s.placed_start+s.audio_duration);cap.textContent=s?s.translation:''}
+ $$('.lane i[data-t]').forEach(i=>i.onclick=()=>{v.currentTime=+i.dataset.t;v.play()});$('#orig').onclick=()=>{const t=v.currentTime;v.src=`${BASE}/api/projects/${P.id}/file/original`;v.onloadedmetadata=()=>{v.currentTime=t}};$('#dub').onclick=()=>{const t=v.currentTime;v.src=`${BASE}/api/projects/${P.id}/file/video?lang=${LANG}`;v.onloadedmetadata=()=>{v.currentTime=t}}}
+
+// ---- glossary & voices
+function termsPane(el){const g=P.transcript?.glossary||[],spk=[...new Set((P.transcript?.segments||[]).map(s=>s.speaker))],info={}
+ ;(P.transcript?.segments||[]).forEach(s=>{(info[s.speaker]??={gender:s.gender,n:0}).n++})
+ el.innerHTML=`<div class="card" style="margin-bottom:16px"><h3>Glossary: terms that must be rendered the same way every time</h3><div class="mut" style="margin-bottom:8px">Type your own rendering per language to pin it; leave blank to let Indic-Translate render it and flag any line that varies. Only affected lines are re-translated and re-voiced.</div>
+ <table id="gt"><tr><th>Term</th><th>Kind</th><th>From</th><th>Pin</th>${P.langs.map(l=>`<th>${lname(l)}</th>`).join('')}</tr>${g.map(t=>grow(t)).join('')}</table><div class="row" style="margin-top:10px"><button class="btn g sm" id="gadd">Add term</button><button class="btn sm" id="gsave">Apply and re-run</button></div></div>
+ <div class="card"><h3>Speakers and voices</h3><div class="mut" style="margin-bottom:8px">Indic-Transcribe has no diarization, so speakers are grouped by voice pitch (a heuristic). Pick a voice per speaker, or leave Automatic.</div>
+ <table><tr><th>Speaker</th><th>Detected</th><th>Lines</th><th>Voice for all languages</th></tr>${spk.map(s=>`<tr><td>${s}</td><td>${info[s].gender}</td><td>${info[s].n}</td><td><select data-spk="${s}"><option value="">Automatic (language's own ${info[s].gender} voice)</option>${ALLV().map(v=>`<option ${P.voices_cfg?.speakers?.[s]==v?'selected':''}>${v}</option>`).join('')}</select></td></tr>`).join('')}</table><p><button class="btn sm" id="vsave">Apply and re-run</button></p></div>`
+ $('#gadd').onclick=()=>$('#gt').insertAdjacentHTML('beforeend',grow({term:'',kind:'term',pin:true,translations:{}}))
+ $('#gsave').onclick=async()=>{const terms=$$('#gt tr[data-g]').map(r=>({term:$('.t',r).value,kind:r.dataset.kind,pin:$('.p',r).checked,translations:Object.fromEntries($$('.tl',r).map(i=>[i.dataset.l,i.value]))}));try{await jput(`/projects/${P.id}/glossary`,{terms});DATA={};await refresh(P.id,true)}catch(e){alert(e.message)}}
+ $('#vsave').onclick=async()=>{const speakers=Object.fromEntries($$('[data-spk]').map(s=>[s.dataset.spk,s.value]));try{await jput(`/projects/${P.id}/voices`,{speakers});DATA={};await refresh(P.id,true)}catch(e){alert(e.message)}}}
+function grow(t){return `<tr data-g data-kind="${esc(t.kind||'term')}"><td><input class="t" type="text" value="${esc(t.term)}"></td><td>${esc(t.kind||'term')}</td><td>${t.source=='user'?'you':t.source=='llm'?'LLM':'you'}</td><td><input class="p" type="checkbox" ${t.pin!==false?'checked':''}></td>${P.langs.map(l=>`<td><input class="tl" data-l="${l}" type="text" lang="${l}" value="${esc(t.translations?.[l]||'')}"></td>`).join('')}</tr>`}
+
+// ---- report
+function reportPane(el){const r=P.report;if(!r){el.innerHTML='<div class="card mut">No report yet.</div>';return}const pid=P.id
+ const rows=Object.entries(r.languages).map(([l,x])=>x.status=='failed'?`<tr><td>${lname(l)}</td><td colspan="7" style="color:var(--bad)">failed: ${esc(x.error)}</td></tr>`:`<tr><td>${lname(l)}</td><td><span class="b ${x.status=='ok'?'ok':'warn'}">${x.status}</span></td><td>${x.segments.dubbed}/${x.segments.total}${x.segments.degraded?` (+${x.segments.degraded} degraded)`:''}</td><td>${x.retries.tts} re-voice · ${x.retries.condense} shortened</td><td>${x.qa.mean_cer==null?'—':(x.qa.mean_cer*100).toFixed(1)+'%'}</td><td>${x.targets.sync_within_300ms_pct??'—'}% within ±300 ms<br>speed ${x.targets.stretch_range?x.targets.stretch_range.map(v=>v.toFixed(2)).join('–')+'×':'—'}</td><td>${x.targets.output_length_diff_ms} ms · ${x.targets.speech_lufs?.toFixed?x.targets.speech_lufs.toFixed(1):'—'} LUFS</td><td>₹${x.cost.total_cost_inr} · ${x.seconds}s</td></tr>`).join('')
+ const misses=Object.entries(r.languages).flatMap(([l,x])=>(x.misses||[]).map(m=>`<li><b>${lname(l)}</b> · ${m.target}${m.segments?` (lines ${m.segments.map(i=>i+1).join(', ')})`:''}: ${esc(m.why)}</li>`))
+ const perMin=r.minutes_of_video?(r.cost_inr/r.minutes_of_video/Math.max(1,Object.keys(r.languages).length)).toFixed(2):'—'
+ el.innerHTML=`<div class="card" style="margin-bottom:16px"><h3>Quality targets per language</h3><table><tr><th>Language</th><th>Status</th><th>Coverage</th><th>Retries</th><th>Mean CER</th><th>Sync · speed</th><th>Length · loudness</th><th>Cost · time</th></tr>${rows}</table>
+ <div style="margin-top:12px"><b>Targets missed</b>${misses.length?`<ul>${misses.join('')}</ul>`:'<div class="mut">None.</div>'}</div><div class="mut">Total ₹${r.cost_inr} · about ₹${perMin} per minute of video per language · ${r.total_seconds}s wall time.</div></div>
+ <div class="card"><h3>Downloads</h3><div class="row">${P.langs.map(l=>`<a class="btn g sm" href="${BASE}/api/projects/${pid}/file/video?lang=${l}" download="video.${l}.mp4">${lname(l)} video</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/srt?lang=${l}" download="subtitles.${l}.srt">${lname(l)} SRT</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/segments?lang=${l}" download="segments.${l}.json">${lname(l)} segments</a>`).join('')}<a class="btn g sm" href="${BASE}/api/projects/${pid}/file/transcript" download="transcript.en.json">English transcript</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/report" download="report.json">report.json</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/log" download="run.log.jsonl">Structured log</a></div></div>`}
+
+;(async()=>{CFG=await api('/config');route()})()
+</script></body></html>
