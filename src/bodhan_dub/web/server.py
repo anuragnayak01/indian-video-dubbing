@@ -158,6 +158,36 @@ def config_js():
     return Response("window.DUB_API='';", media_type="application/javascript")
 
 
+@app.post("/api/diagnose")
+def diagnose():
+    """Tiny live test of the Bodhan connection, run from the server, so key/endpoint problems are visible in the UI."""
+    import httpx
+    keys = config.Keys.from_env()
+    base = config.BASE_URL.rstrip("/")
+
+    def fp(k: str) -> dict:
+        return {"set": bool(k), "length": len(k), "last4": k[-4:] if k else "", "has_whitespace": k != k.strip() or " " in k}
+
+    out: dict = {"base_url": base, "keys": {"transcribe": fp(keys.transcribe), "translate": fp(keys.translate), "speak": fp(keys.speak)},
+                 "translate_key_same_as_transcribe": bool(keys.translate) and keys.translate == keys.transcribe,
+                 "translate_key_same_as_speak": bool(keys.translate) and keys.translate == keys.speak, "tests": []}
+    for path in ("/translate", "/v1/translate"):
+        try:
+            r = httpx.post(base + path, headers={"Authorization": f"Bearer {keys.translate.strip()}"}, timeout=30,
+                           json={"text": "Hello", "target_language": "hi"})
+            out["tests"].append({"call": "translate POST " + path, "status": r.status_code, "body": r.text[:300],
+                                 "request_id": r.headers.get("x-request-id", "")})
+        except Exception as e:
+            out["tests"].append({"call": "translate POST " + path, "error": f"{type(e).__name__}: {e}"[:200]})
+    try:
+        c = BodhanClient(keys, None, max_attempts=1, backoff=0)
+        wav = c.speak("नमस्ते", config.DEFAULT_VOICES["male"], "hi")
+        out["tests"].append({"call": "speak", "status": 200, "body": f"{len(wav)} bytes of audio"})
+    except Exception as e:
+        out["tests"].append({"call": "speak", "error": str(e)[:300]})
+    return out
+
+
 @app.get("/api/config")
 def get_config():
     keys = config.Keys.from_env()

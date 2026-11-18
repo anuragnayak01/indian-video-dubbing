@@ -94,3 +94,15 @@ def test_token_and_cors(tmp_path, monkeypatch):
         monkeypatch.delenv("DUB_ACCESS_TOKEN")
         monkeypatch.delenv("DUB_CORS_ORIGINS")
         importlib.reload(server)
+
+
+def test_diagnose_reports_keys_and_statuses(client, monkeypatch):
+    import httpx
+    client, server = client
+    monkeypatch.setenv("BODHAN_TRANSLATE_KEY", "same-key-1234")
+    monkeypatch.setenv("BODHAN_TRANSCRIBE_KEY", "same-key-1234")
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(404, json={"detail": "Not Found"}, headers={"x-request-id": "r1"}))
+    monkeypatch.setattr(server, "BodhanClient", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("speak: HTTP 404")))
+    j = client.post("/api/diagnose").json()
+    assert j["translate_key_same_as_transcribe"] is True and j["keys"]["translate"]["last4"] == "1234"
+    assert [t["status"] for t in j["tests"][:2]] == [404, 404] and "error" in j["tests"][2]
