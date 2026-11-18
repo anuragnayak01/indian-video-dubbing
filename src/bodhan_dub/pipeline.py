@@ -89,6 +89,10 @@ def analyse_source(opt: Options, client: BodhanClient, brain: Brain, work: Path)
     groups, how = brain.group_sentences(texts, chunks)
     segs = segmentation.build_segments(texts, chunks, groups)
     log("stage", stage="group_sentences", segments=len(segs), method=how)
+    if not brain.available:
+        warnings.append("LLM not configured (set LLM_BASE_URL, LLM_MODEL and LLM_API_KEY): using rule-based sentence grouping")
+    elif how != "llm":
+        warnings.append(f"LLM call failed, used rule-based grouping: {brain.last_error or 'unknown error'}")
 
     glossary = textutil.merge_glossary(textutil.load_glossary(opt.glossary),
                                        brain.build_glossary(" ".join(s["text"] for s in segs)))

@@ -31,6 +31,7 @@ class Brain:
             from openai import OpenAI
             self.client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key=os.environ["LLM_API_KEY"])
         self.calls = 0
+        self.last_error = ""
 
     @property
     def available(self) -> bool:
@@ -59,8 +60,10 @@ class Brain:
             groups = out["groups"] if isinstance(out, dict) else out
             if segmentation.valid_groups(groups, len(texts), chunks):
                 return groups, "llm"
+            self.last_error = "the LLM returned an invalid grouping"
             log("llm_rejected", decision="group_sentences", reason="invalid partition")
         except Exception as e:
+            self.last_error = f"{type(e).__name__}: {str(e)[:160]}"
             log("llm_failed", decision="group_sentences", error=str(e)[:150])
         return fallback, "heuristic"
 
