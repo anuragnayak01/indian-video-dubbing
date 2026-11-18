@@ -33,7 +33,7 @@ async def require_token(request: Request, call_next):
     """Everything that spends Bodhan credit or lists projects needs the token. Media GETs (/file/) are authorised by
     the unguessable project id so <video>/<audio> tags work cross-origin without headers."""
     p = request.url.path
-    open_ = request.method in ("OPTIONS", "HEAD") or p in ("/", "/config.js", "/api/health") or (
+    open_ = request.method in ("OPTIONS", "HEAD") or p in ("/", "/config.js", "/api/health") or (request.method == "GET" and p == "/api/diagnose") or (
         request.method == "GET" and p.startswith("/api/projects/") and "/file/" in p)
     if ACCESS_TOKEN and p.startswith("/api") and not open_:
         if not hmac.compare_digest(request.headers.get("x-access-token", ""), ACCESS_TOKEN):
@@ -158,10 +158,13 @@ def config_js():
     return Response("window.DUB_API='';", media_type="application/javascript")
 
 
+@app.get("/api/diagnose")
 @app.post("/api/diagnose")
-def diagnose():
+def diagnose(request: Request):
     """Tiny live test of the Bodhan connection, run from the server, so key/endpoint problems are visible in the UI."""
     import httpx
+    if request.method == "GET" and ACCESS_TOKEN and not hmac.compare_digest(request.query_params.get("token", ""), ACCESS_TOKEN):
+        raise HTTPException(401, "Add ?token=YOUR_ACCESS_TOKEN to the address")   # browser-friendly form of the same check
     keys = config.Keys.from_env()
     base = config.BASE_URL.rstrip("/")
 
