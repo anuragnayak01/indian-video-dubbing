@@ -228,7 +228,7 @@ async def create_project(file: UploadFile = File(...), langs: str = Form("hi,ta,
         while chunk := await file.read(1 << 20):
             fh.write(chunk)
     m = {"name": name or Path(file.filename or "video").stem, "input": f"input{ext}", "langs": lang_list, "code_mixed": code_mixed,
-         "style": style, "created": time.time(), "concurrency": 4}
+         "style": style, "created": time.time(), "concurrency": int(os.environ.get("DUB_CONCURRENCY", "2"))}
     save_meta(pid, m)
     start_job(pid, lang_list, merge=False)
     return {"id": pid, **m}
