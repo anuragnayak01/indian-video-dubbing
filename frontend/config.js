@@ -1,2 +1,2 @@
 // Set this to your Render backend URL (no trailing slash), then redeploy on Vercel.
-window.DUB_API = 'https://YOUR-BACKEND.onrender.com';
+window.DUB_API = 'https://indian-video-dubbing.onrender.com';
