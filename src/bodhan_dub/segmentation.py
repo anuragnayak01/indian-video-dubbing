@@ -91,9 +91,15 @@ def speech_spans(silences: list[tuple[float, float]], duration: float, min_speec
     return spans
 
 
-def _split_long(spans, max_len):
-    """Recursively split a run of spans at its largest internal pause until each part fits."""
+def _split_long(spans, max_len, soft_len=0.0, soft_gap=0.3):
+    """Recursively split a run of spans at its largest internal pause until each part fits.
+    Beyond `soft_len` seconds a run is also split at a real pause (>= soft_gap) so no single "sentence" is huge."""
     start, end = spans[0][0], spans[-1][1]
+    if len(spans) > 1 and soft_len and end - start > soft_len:
+        gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
+        k = max(range(len(gaps)), key=lambda i: gaps[i])
+        if gaps[k] >= soft_gap:
+            return _split_long(spans[:k + 1], max_len, soft_len, soft_gap) + _split_long(spans[k + 1:], max_len, soft_len, soft_gap)
     if end - start <= max_len:
         return [(spans, False)]
     if len(spans) == 1:  # continuous speech longer than the window: unavoidable hard split
@@ -102,10 +108,10 @@ def _split_long(spans, max_len):
         return [([(start + k * step, start + (k + 1) * step)], True) for k in range(n)]
     gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
     k = max(range(len(gaps)), key=lambda i: gaps[i])
-    return _split_long(spans[:k + 1], max_len) + _split_long(spans[k + 1:], max_len)
+    return _split_long(spans[:k + 1], max_len, soft_len, soft_gap) + _split_long(spans[k + 1:], max_len, soft_len, soft_gap)
 
 
-def make_chunks(spans, duration, max_len=25.0, cut_gap=0.6, min_len=0.35, pad=0.08):
+def make_chunks(spans, duration, max_len=25.0, cut_gap=0.6, min_len=0.35, pad=0.08, soft_len=14.0):
     """Return (chunks, skipped). A chunk is {start, end, hard_split}."""
     runs, cur = [], []
     for sp in spans:
@@ -117,7 +123,7 @@ def make_chunks(spans, duration, max_len=25.0, cut_gap=0.6, min_len=0.35, pad=0.
         runs.append(cur)
     parts = []
     for r in runs:
-        parts += _split_long(r, max_len)
+        parts += _split_long(r, max_len, soft_len)
     raw = [(p[0][0], p[-1][1], hard) for p, hard in parts]
     chunks, skipped = [], []
     for i, (s, e, hard) in enumerate(raw):
@@ -132,14 +138,17 @@ def make_chunks(spans, duration, max_len=25.0, cut_gap=0.6, min_len=0.35, pad=0.
     return chunks, skipped
 
 
-def heuristic_groups(texts: list[str], chunks: list[dict], max_span: float = 20.0, max_gap: float = 2.0):
-    """Group consecutive chunks into sentences using terminal punctuation. Fallback when the LLM is unavailable."""
+def heuristic_groups(texts: list[str], chunks: list[dict], max_span: float = 15.0, max_gap: float = 2.0):
+    """Group consecutive chunks into sentences using terminal punctuation, never letting a group exceed ~max_span seconds
+    (STT output often has little punctuation). Fallback when the LLM is unavailable."""
     groups, cur = [], []
     for i, t in enumerate(texts):
+        if cur and chunks[i]["end"] - chunks[cur[0]]["start"] > max_span:
+            groups.append(cur)
+            cur = []
         cur.append(i)
-        span = chunks[i]["end"] - chunks[cur[0]]["start"]
         gap = chunks[i + 1]["start"] - chunks[i]["end"] if i + 1 < len(texts) else 99
-        if SENT_END.search(t.strip()) or span >= max_span or gap > max_gap:
+        if SENT_END.search(t.strip()) or gap > max_gap:
             groups.append(cur)
             cur = []
     if cur:

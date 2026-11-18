@@ -65,3 +65,24 @@ def test_voice_selection_uses_the_languages_own_voices_and_overrides():
     assert pick_voice({"female": "X"}, "hi", "S1", "female") == "X"
     assert pick_voice({"speakers": {"S1": "Zed"}, "female": "X"}, "hi", "S1", "female") == "Zed"
     assert pick_voice({}, "xx", "S1", "male") == "Amit"
+
+
+def test_translate_falls_back_to_v1_path_on_404():
+    import httpx
+
+    from bodhan_dub import config
+    from bodhan_dub.bodhan import BodhanClient
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.path)
+        if req.url.path == "/translate":
+            return httpx.Response(404, json={"detail": "Not Found"})
+        return httpx.Response(200, json={"translation": "नमस्ते", "truncated": False, "usage": {"completion_tokens": 3}})
+
+    keys = config.Keys("a", "b", "c")
+    c = BodhanClient(keys, None, http=httpx.Client(transport=httpx.MockTransport(handler)), backoff=0)
+    assert c.translate("hello", "hi")["text"] == "नमस्ते"
+    assert seen == ["/translate", "/v1/translate"]
+    c.translate("again", "hi")
+    assert seen[-1] == "/v1/translate" and seen.count("/translate") == 1     # remembers the working path

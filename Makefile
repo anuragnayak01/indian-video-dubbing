@@ -1,3 +1,4 @@
+.PHONY: setup lint test check web frontend
 .PHONY: setup check test lint web
 setup:
 	pip install -r requirements-dev.txt && pip install -e .

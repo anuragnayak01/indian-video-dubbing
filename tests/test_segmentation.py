@@ -71,3 +71,16 @@ def test_plausibility_guard():
     assert sg.implausible_transcript("la " * 30, 5) is not None
     assert sg.implausible_transcript("the area of a triangle is half base times height", 4) is None
     assert sg.implausible_transcript("one two three four five six seven eight nine ten", 1) == "too_many_words_for_duration"
+
+
+def test_long_run_is_split_at_a_real_pause():
+    # one 30 s run of speech with a 0.4 s breath in the middle: split there instead of one huge chunk
+    spans = [(0, 14), (14.4, 30)]
+    chunks, _ = sg.make_chunks(spans, 31.0)
+    assert len(chunks) == 2 and not any(c["hard_split"] for c in chunks)
+
+
+def test_fallback_grouping_caps_unpunctuated_speech():
+    chunks = [{"start": i * 14, "end": i * 14 + 13.5} for i in range(4)]
+    groups = sg.heuristic_groups(["no punctuation here"] * 4, chunks)
+    assert all(chunks[g[-1]]["end"] - chunks[g[0]]["start"] <= 15 for g in groups)

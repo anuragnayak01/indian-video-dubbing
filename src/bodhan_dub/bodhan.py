@@ -9,6 +9,7 @@ reruns do not repeat paid calls, and per-model cost metering.
 """
 import hashlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -131,6 +132,28 @@ class BodhanClient:
         return text
 
     # ---- Indic-Translate ----
+    TRANSLATE_PATHS = ("/translate", "/v1/translate")   # documented path first; the second is a fallback on 404
+
+    def _post_translate(self, body: dict):
+        paths = [os.environ["BODHAN_TRANSLATE_PATH"]] if os.environ.get("BODHAN_TRANSLATE_PATH") else list(self.TRANSLATE_PATHS)
+        start = getattr(self, "_tpath", None)
+        if start in paths:
+            paths.remove(start)
+            paths.insert(0, start)
+        err = None
+        for path in paths:
+            try:
+                r = self._request("translate", "translate", lambda path=path: self.http.post(
+                    f"{self.base}{path}", headers=self._auth(self.keys.translate), json=body))
+                self._tpath = path
+                return r
+            except BodhanError as e:
+                if e.status != 404:
+                    raise
+                log("translate_path_not_found", path=path, detail=str(e)[:200])
+                err = e
+        raise err
+
     def translate(self, text: str, lang: str, script: str = "native") -> dict:
         key = self._ck("mt", text, lang, script)
         hit = self._cget(key, "json")
@@ -140,8 +163,7 @@ class BodhanClient:
         body = {"text": text, "target_language": lang}
         if script != "native":
             body["script"] = script
-        r = self._request("translate", "translate", lambda: self.http.post(
-            f"{self.base}/translate", headers=self._auth(self.keys.translate), json=body))
+        r = self._post_translate(body)
         j = r.json()
         tokens = (j.get("usage") or {}).get("output_tokens") or (j.get("usage") or {}).get("completion_tokens") \
             or max(1, len(j.get("translation", "")) // 2)

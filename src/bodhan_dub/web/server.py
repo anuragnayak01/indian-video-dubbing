@@ -141,7 +141,10 @@ def progress(pid: str) -> dict:
             L["stage"] = "failed"
     for L in langs.values():
         L["done"] = len(L.pop("idx"))
-    return {"source_stages": stages, "languages": langs, "api_retries": sum(e.get("event") == "api_retry" for e in ev)}
+    retries = [e for e in ev if e.get("event") == "api_retry"]
+    last = retries[-1] if retries else {}
+    last_retry = f'{last.get("api", "")}: ' + (f'HTTP {last["status"]}' if last.get("status") else str(last.get("error", ""))) if last else ""
+    return {"source_stages": stages, "languages": langs, "api_retries": len(retries), "last_retry": last_retry}
 
 
 # ------------------------------------------------------------------ API
