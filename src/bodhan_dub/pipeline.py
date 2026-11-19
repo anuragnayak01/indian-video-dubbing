@@ -354,6 +354,13 @@ def add_costs(a: dict, b: dict) -> dict:
     return out
 
 
+def preflight(client: BodhanClient, lang: str) -> None:
+    """Cheap end-to-end probe of translate and speak (a few characters, cached) BEFORE spending on transcription,
+    so a wrong key or endpoint fails in seconds with a clear message instead of after a long run."""
+    t = client.translate("Hello.", lang)["text"] or "Hello."
+    client.speak(t, config.DEFAULT_VOICES["male"], lang)
+
+
 def run_pipeline(opt: Options, client: BodhanClient, brain: Brain) -> int:
     t0 = time.time()
     opt.out.mkdir(parents=True, exist_ok=True)
@@ -363,6 +370,14 @@ def run_pipeline(opt: Options, client: BodhanClient, brain: Brain) -> int:
               "languages": {}, "errors": []}
     voices = textutil.load_yaml(opt.voices)
     rc = 0
+    try:
+        preflight(client, next((x for x in opt.langs if x != "en"), "hi"))
+        log("stage", stage="preflight", ok=True)
+    except Exception as e:
+        log("fatal", stage="preflight", error=str(e)[:300])
+        report["errors"].append(f"Bodhan check failed before starting (nothing was spent on transcription): {e}")
+        textutil.atomic_write(opt.out / "report.json", json.dumps(report, indent=1))
+        return 2
     try:
         src = analyse_source(opt, client, brain, work)
     except Exception as e:  # nothing can be dubbed without the English analysis
