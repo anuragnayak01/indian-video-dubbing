@@ -26,6 +26,18 @@ class BodhanError(RuntimeError):
         self.status, self.code = status, code
 
 
+def hint(status: int | None, model: str) -> str:
+    """Plain-English next step for the errors people actually hit."""
+    if status in (401, 403):
+        return f" | Hint: the key was rejected. Check it is correct and was created for {model} (each Bodhan key serves one model)."
+    if status == 404:
+        return (f" | Hint: route not found for this key. Most often the key was not created for {model} "
+                "(each Bodhan key serves one model), or BODHAN_BASE_URL is wrong.")
+    if status == 429:
+        return " | Hint: rate limited or out of credit. Check your balance in the Bodhan console, lower concurrency and wait."
+    return ""
+
+
 class Meter:
     """Counts calls, retries, latency and cost (INR) per model. Thread safe."""
 
@@ -90,10 +102,11 @@ class BodhanClient:
                     r = fn()
                 self.meter.add(model, calls=1, seconds=time.time() - t0)
                 if r.status_code == 200:
+                    log("api_call", api=label, status=200, seconds=round(time.time() - t0, 2))
                     return r
                 if r.status_code in (429, 500, 502, 503, 504):
                     wait = float(r.headers.get("retry-after", 0) or 0) or self.backoff * 2 ** (attempt - 1)
-                    last = BodhanError(f"{label}: HTTP {r.status_code}", r.status_code)
+                    last = BodhanError(f"{label}: HTTP {r.status_code}{hint(r.status_code, 'indic-' + model)}", r.status_code)
                     self.meter.add(model, retries=1)
                     log("api_retry", api=label, status=r.status_code, attempt=attempt, wait=round(wait, 1))
                     time.sleep(wait)
@@ -103,7 +116,8 @@ class BodhanClient:
                     code = r.json().get("error", {}).get("code")
                 except Exception:
                     pass
-                raise BodhanError(f"{label}: HTTP {r.status_code}: {r.text[:300]}", r.status_code, code)
+                log("api_error", api=label, status=r.status_code, body=r.text[:300], request_id=r.headers.get("x-request-id", ""))
+                raise BodhanError(f"{label}: HTTP {r.status_code}: {r.text[:300]}{hint(r.status_code, 'indic-' + model)}", r.status_code, code)
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 last = BodhanError(f"{label}: {type(e).__name__}")
                 self.meter.add(model, retries=1)

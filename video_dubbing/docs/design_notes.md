@@ -79,6 +79,7 @@ flowchart TD
 | Repeated / dropped speech | re-voice with finer pieces, keep the best attempt |
 | One segment fails | other segments continue; it is listed as failed with the error |
 | One language fails | other languages continue; exit code 1; report and partial outputs written |
+| Wrong key / endpoint (401, 403, 404) | preflight probe of translate and speak before any transcription spend; fails in seconds with a plain-English hint, exit code 2 |
 | Source analysis fails (no audio, bad file) | report with the error, exit code 2 |
 | Re-run | all paid calls are cached; unchanged lines cost nothing |
 

@@ -44,6 +44,16 @@ async def require_token(request: Request, call_next):
 if CORS_ORIGINS:      # added last so it is the outermost layer and answers preflights first
     app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["*"],
                        allow_headers=["Content-Type", "X-Access-Token"], max_age=600)
+
+
+def _startup_log() -> None:
+    k = config.Keys.from_env()
+    logs.log("server_start", base_url=config.BASE_URL, transcribe_key="set" if k.transcribe else "MISSING",
+             translate_key="set" if k.translate else "MISSING", speak_key="set" if k.speak else "MISSING",
+             llm=f"{os.environ.get('LLM_MODEL') or 'not configured'}", access_token="set" if ACCESS_TOKEN else "NOT SET (open to anyone)",
+             cors=",".join(CORS_ORIGINS) or "none", concurrency=os.environ.get("DUB_CONCURRENCY", "2"), data_dir=str(DATA))
+
+
 JOB_LOCK = threading.Lock()      # the logger is process-wide, so jobs run one at a time
 JOBS: dict[str, dict] = {}
 OVERRIDE_FIELDS = {"text", "english", "voice", "style", "speed", "max_stretch"}
@@ -88,16 +98,24 @@ def start_job(pid: str, langs: list[str], merge: bool) -> None:
                 if keys.missing():
                     raise RuntimeError("Missing environment variables: " + ", ".join(keys.missing()))
                 out.mkdir(exist_ok=True)
-                logs.setup(log_file, echo=False)
+                logs.setup(log_file, echo=True, tag=pid)
                 client = BodhanClient(keys, out / "work" / "cache", max_concurrency=m.get("concurrency", 4))
                 gl, vo = DATA / pid / "glossary.yaml", DATA / pid / "voices.yaml"
                 opt = Options(input=DATA / pid / m["input"], langs=langs, out=out, glossary=gl if gl.exists() else None,
                               voices=vo if vo.exists() else None, code_mixed=m.get("code_mixed", False),
                               concurrency=m.get("concurrency", 4), style=m.get("style") or None, merge=merge)
+                logs.log("job_start", langs=",".join(langs), merge=merge, concurrency=m.get("concurrency"), llm=Brain().available)
                 rc = run_pipeline(opt, client, Brain())
+                logs.log("job_end", exit_code=rc)
                 job["state"] = "done" if rc == 0 else "finished_with_errors"
+                if rc:
+                    try:
+                        job["error"] = "; ".join(json.loads((out / "report.json").read_text()).get("errors", []))[:400]
+                    except Exception:
+                        pass
             except Exception as e:  # surface any failure to the UI instead of dying silently
                 job["state"], job["error"] = "error", str(e)[:400]
+                logs.log("job_crashed", error=f"{type(e).__name__}: {e}")
             job["finished"] = time.time()
 
     threading.Thread(target=work, daemon=True).start()
@@ -148,6 +166,9 @@ def progress(pid: str) -> dict:
 
 
 # ------------------------------------------------------------------ API
+_startup_log()
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "auth": bool(ACCESS_TOKEN)}

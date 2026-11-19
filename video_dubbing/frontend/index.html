@@ -82,7 +82,7 @@ function stepsHtml(){const g=P.progress,names=[['probe','Reading video'],['vad',
 function paintProgress(){const el=$('#prog');if(el)el.innerHTML=stepsHtml()}
 async function paint(){const p=P,st=p.job.state,running=st=='running'||st=='queued'
  $('#app').innerHTML=`<div class="row"><div><a onclick="location.hash='#'" class="mut">‹ Projects</a><h2>${esc(p.name)}</h2><div class="mut">${p.report?.source?`${mmss(p.report.source.duration)} · ${p.report.source.segments} sentences · ${p.report.source.speakers.length} speaker(s) · sentences grouped by ${p.report.source.grouping}`:'analysing…'}</div></div><span class="sp"></span><span class="pill">${st}</span></div>
- ${st=='error'?`<div class="err-box">${esc(p.job.error)}</div>`:''}${p.report?.source?.warnings?.length?p.report.source.warnings.map(w=>`<div class="warn-box">${esc(w)}</div>`).join(''):''}
+ ${(st=='error'||p.job.error)?`<div class="err-box">${esc(p.job.error)}</div>`:''}${p.report?.source?.warnings?.length?p.report.source.warnings.map(w=>`<div class="warn-box">${esc(w)}</div>`).join(''):''}
  ${running?`<div class="card" style="margin:14px 0"><h3>${p.report?'Applying your changes':'Dubbing'}…</h3><div id="prog">${stepsHtml()}</div></div>`:''}
  <div class="row" style="margin:16px 0"><div class="tabs">${p.langs.map(l=>`<a class="${l==LANG?'on':''}" onclick="go('${l}','${TAB}')">${lname(l)}</a>`).join('')}</div><span class="sp"></span><div class="tabs">${[['sentences','Sentences'],['timeline','Timeline'],['terms','Glossary & voices'],['report','Report & export']].map(([k,n])=>`<a class="${k==TAB?'on':''}" onclick="go('${LANG}','${k}')">${n}</a>`).join('')}</div></div><div id="pane"></div>`
  if(!running)await pane()}

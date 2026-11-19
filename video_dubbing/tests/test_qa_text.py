@@ -86,3 +86,34 @@ def test_translate_falls_back_to_v1_path_on_404():
     assert seen == ["/translate", "/v1/translate"]
     c.translate("again", "hi")
     assert seen[-1] == "/v1/translate" and seen.count("/translate") == 1     # remembers the working path
+
+
+def test_preflight_fails_fast_with_hint_on_wrong_key():
+    import httpx
+    import pytest
+
+    from bodhan_dub import config
+    from bodhan_dub.bodhan import BodhanClient, BodhanError
+    from bodhan_dub.pipeline import preflight
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    c = BodhanClient(config.Keys("a", "b", "c"), None, http=httpx.Client(transport=httpx.MockTransport(handler)), backoff=0)
+    with pytest.raises(BodhanError) as e:
+        preflight(c, "hi")
+    assert "indic-translate" in str(e.value) and "each Bodhan key serves one model" in str(e.value)
+    assert set(calls) == {"/translate", "/v1/translate"}      # nothing else was called, no transcription spend
+
+
+def test_console_log_line_is_readable_and_flags_errors(capsys, tmp_path):
+    from bodhan_dub import logs
+    logs.setup(tmp_path / "r.jsonl", echo=True, tag="abc123")
+    logs.log("api_error", api="translate", status=404, body='{"detail":"Not Found"}')
+    logs.log("stage", stage="vad", spans=3)
+    out = capsys.readouterr().out.splitlines()
+    assert "ERROR [abc123] api_error api=translate status=404" in out[0]
+    assert "INFO  [abc123] stage stage=vad spans=3" in out[1]
+    logs.setup(None, echo=False)

@@ -106,3 +106,22 @@ def test_diagnose_reports_keys_and_statuses(client, monkeypatch):
     j = client.post("/api/diagnose").json()
     assert j["translate_key_same_as_transcribe"] is True and j["keys"]["translate"]["last4"] == "1234"
     assert [t["status"] for t in j["tests"][:2]] == [404, 404] and "error" in j["tests"][2]
+
+
+def test_diagnose_get_needs_query_token_and_post_needs_header(tmp_path, monkeypatch):
+    import importlib
+
+    from fastapi.testclient import TestClient
+
+    from bodhan_dub.web import server
+    monkeypatch.setenv("DUB_ACCESS_TOKEN", "tok")
+    monkeypatch.setenv("BODHAN_DUB_WEB_DATA", str(tmp_path))
+    s = importlib.reload(server)
+    try:
+        c = TestClient(s.app)
+        assert c.get("/api/diagnose").status_code == 401
+        assert c.post("/api/diagnose").status_code == 401
+        assert c.get("/api/diagnose?token=bad").status_code == 401
+    finally:
+        monkeypatch.delenv("DUB_ACCESS_TOKEN")
+        importlib.reload(server)
