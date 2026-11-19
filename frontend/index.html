@@ -28,7 +28,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:9px 8px;border-bottom:1p
 .warn-box{background:#3a2e12;color:var(--warn);border-radius:10px;padding:10px 14px;margin-bottom:14px}.err-box{background:#3a1c1c;color:var(--bad);border-radius:10px;padding:10px 14px;margin-bottom:14px}
 video{width:100%;max-height:380px;background:#000;border-radius:10px}.cap{min-height:26px;text-align:center;margin-top:8px;font-size:16px}
 </style></head><body>
-<nav><b>Bodhan Dub Studio</b><a data-r="">Projects</a><a data-r="new">New project</a><span class="sp"></span><span class="pill">AI-dubbed output · Bodhan models only</span></nav>
+<nav><b>Bodhan Dub Studio</b><a data-r="">Projects</a><a data-r="new">New project</a><a href="#token" id="navtok">Access token</a><span class="sp"></span><span class="pill">AI-dubbed output · Bodhan models only</span></nav>
 <main id="app"></main>
 <script src="config.js"></script>
 <script>
@@ -92,14 +92,47 @@ const lname=c=>CFG.languages.find(l=>l.code==c)?.label||c
 document.querySelectorAll('nav a').forEach(a=>a.onclick=()=>location.hash=a.dataset.r?'#'+a.dataset.r:'#')
 window.onhashchange=route
 async function runDiag(){const o=$('#diagout');o.textContent='Testing...';try{o.textContent=JSON.stringify(await api('/diagnose',{method:'POST'}),null,2)}catch(e){o.textContent='Failed: '+e.message}}
-async function route(){clearInterval(TIMER);const [v,id,l,t]=location.hash.slice(1).split('/');$$('nav a').forEach(a=>a.classList.toggle('on',a.dataset.r==(v||'')));
- if(v=='new')return renderNew();if(v=='p'&&id){LANG=l||LANG;TAB=t||TAB;return openProject(id)}return renderHome()}
+async function route(){clearInterval(TIMER);const [v,id,l,t]=location.hash.slice(1).split('/');$$('nav a').forEach(a=>a.classList.toggle('on',(a.dataset.r||'')===(v||'')||(v==='token'&&a.id==='navtok')));
+ if(v=='token')return renderTokenPage();if(v=='new')return renderNew();if(v=='p'&&id){LANG=l||LANG;TAB=t||TAB;return openProject(id)}return renderHome()}
+function renderTokenPage(){
+  const has=!!tok()
+  $('#app').innerHTML=`<div class="card" style="max-width:520px;margin:40px auto">
+    <h2 style="margin-bottom:8px">Access token</h2>
+    <p class="mut" style="margin:0 0 16px">From Render → your service → Environment → <code>DUB_ACCESS_TOKEN</code>. Stored only in this browser.</p>
+    <div id="tokerr" class="err-box" style="display:none;margin-bottom:14px"></div>
+    <div id="tokok" class="mut" style="margin-bottom:12px">${has?'A token is saved in this browser.':'No token saved yet.'}</div>
+    <label class="mut" style="display:block;font-size:12px;margin-bottom:6px">Token</label>
+    <input id="tokin" type="text" autocomplete="off" spellcheck="false" placeholder="Paste DUB_ACCESS_TOKEN" style="margin-bottom:12px;font-family:ui-monospace,monospace" value="">
+    <div class="row">
+      <button class="btn" id="toksave">Save token</button>
+      <button class="btn g" id="tokclr" type="button">Clear</button>
+      <span id="tokst" class="mut"></span>
+    </div>
+    <p class="mut" style="margin-top:14px;font-size:12px">Backend: <code>${esc(BASE||'(not set)')}</code></p>
+  </div>`
+  $('#toksave').onclick=async()=>{
+    const t=($('#tokin').value||'').trim()
+    const err=$('#tokerr'),st=$('#tokst')
+    if(!t){err.style.display='';err.textContent='Token is required.';return}
+    setTok(t);err.style.display='none';st.textContent='Checking…';$('#toksave').disabled=true
+    try{
+      const r=await fetch(BASE+'/api/config',{headers:{'X-Access-Token':t}})
+      if(r.status===401){err.style.display='';err.textContent='Token rejected by server. Copy DUB_ACCESS_TOKEN again from Render.';st.textContent='';setTok('');$('#toksave').disabled=false;return}
+      if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.statusText)
+      CFG=await r.json();st.textContent='Saved · connected';$('#tokok').textContent='Token saved.';$('#toksave').disabled=false
+      setTimeout(()=>location.hash='#',600)
+    }catch(e){err.style.display='';err.textContent=e.message||'Could not reach backend';st.textContent='';$('#toksave').disabled=false}
+  }
+  $('#tokclr').onclick=()=>{setTok('');$('#tokin').value='';$('#tokok').textContent='No token saved yet.';$('#tokst').textContent='Cleared';$('#tokin').focus()}
+  $('#tokin').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#toksave').click()}}
+  $('#tokin').focus()
+}
 
 // ---------------- home
 async function renderHome(){const ps=await api('/projects');$('#app').innerHTML=`<div class="hero"><h1>Every voice.<br>Every Indian language.</h1><p>Upload an English video, pick the languages, and review every dubbed sentence: translation, voice, style and speed, with the checks that caught repeats, gaps and drift.</p><button class="btn" onclick="location.hash='#new'">Start a new project</button></div>
-<h2>Your projects</h2><div class="row" style="margin-bottom:10px"><button class="btn g sm" id="diag">Test Bodhan connection</button></div><pre id="diagout" class="mut" style="white-space:pre-wrap;font-size:12px"></pre><div class="mut" style="margin-bottom:14px">${CFG.missing_keys.length?'':'Keys loaded · '}${CFG.llm?'LLM connected':'No LLM configured (heuristic fallbacks are used)'}</div>
+<h2>Your projects</h2><div class="row" style="margin-bottom:10px"><button class="btn g sm" id="diag">Test Bodhan connection</button><button class="btn g sm" id="gotok">Access token</button></div><pre id="diagout" class="mut" style="white-space:pre-wrap;font-size:12px"></pre><div class="mut" style="margin-bottom:14px">${CFG.missing_keys.length?'':'Keys loaded · '}${CFG.llm?'LLM connected':'No LLM configured (heuristic fallbacks are used)'} · ${tok()?'token saved':'<span style="color:var(--bad)">no token</span>'}</div>
 ${CFG.missing_keys.length?`<div class="err-box">Missing environment variables: ${CFG.missing_keys.join(', ')}. Add them to .env and restart.</div>`:''}
-${ps.length?`<div class="grid">${ps.map(p=>`<div class="card"><b>${esc(p.name)}</b><div class="mut">${p.langs.map(lname).join(', ')}</div><div class="row" style="margin-top:12px"><span class="pill">${p.job}</span><span class="sp"></span><button class="btn g sm" onclick="location.hash='#p/${p.id}'">Open</button><a onclick="delP('${p.id}')">Delete</a></div></div>`).join('')}</div>`:'<div class="card mut">No projects yet.</div>'}`;$('#diag').onclick=runDiag}
+${ps.length?`<div class="grid">${ps.map(p=>`<div class="card"><b>${esc(p.name)}</b><div class="mut">${p.langs.map(lname).join(', ')}</div><div class="row" style="margin-top:12px"><span class="pill">${p.job}</span><span class="sp"></span><button class="btn g sm" onclick="location.hash='#p/${p.id}'">Open</button><a onclick="delP('${p.id}')">Delete</a></div></div>`).join('')}</div>`:'<div class="card mut">No projects yet.</div>'}`;$('#diag').onclick=runDiag;$('#gotok').onclick=()=>location.hash='#token'}
 async function delP(id){if(confirm('Delete this project and its outputs?')){await api('/projects/'+id,{method:'DELETE'});renderHome()}}
 
 // ---------------- new project
@@ -199,5 +232,13 @@ function reportPane(el){const r=P.report;if(!r){el.innerHTML='<div class="card m
  <div style="margin-top:12px"><b>Targets missed</b>${misses.length?`<ul>${misses.join('')}</ul>`:'<div class="mut">None.</div>'}</div><div class="mut">Total ₹${r.cost_inr} · about ₹${perMin} per minute of video per language · ${r.total_seconds}s wall time.</div></div>
  <div class="card"><h3>Downloads</h3><div class="row">${P.langs.map(l=>`<a class="btn g sm" href="${BASE}/api/projects/${pid}/file/video?lang=${l}" download="video.${l}.mp4">${lname(l)} video</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/srt?lang=${l}" download="subtitles.${l}.srt">${lname(l)} SRT</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/segments?lang=${l}" download="segments.${l}.json">${lname(l)} segments</a>`).join('')}<a class="btn g sm" href="${BASE}/api/projects/${pid}/file/transcript" download="transcript.en.json">English transcript</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/report" download="report.json">report.json</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/log" download="run.log.jsonl">Structured log</a></div></div>`}
 
-;(async()=>{try{CFG=await api('/config');route()}catch(e){$('#app').innerHTML=`<div class="card" style="max-width:640px;margin:40px auto"><h3>Cannot reach the backend</h3><p>${esc(e.message)}</p><p class="mut">Backend URL in <code>config.js</code>: <code>${esc(BASE||'(same origin)')}</code>. Check that it is your deployed API address, that <code>${esc(BASE)}/api/health</code> opens, and that <code>DUB_CORS_ORIGINS</code> on the server equals <code>${esc(location.origin)}</code>.</p></div>`}})()
+;(async()=>{
+  // Always offer the on-page token form when nothing is saved yet.
+  if(!tok()){location.hash='#token';renderTokenPage();return}
+  try{CFG=await api('/config');route()}
+  catch(e){
+    if(String(e.message||'').toLowerCase().includes('token')){location.hash='#token';renderTokenPage();return}
+    $('#app').innerHTML=`<div class="card" style="max-width:640px;margin:40px auto"><h3>Cannot reach the backend</h3><p>${esc(e.message)}</p><p class="mut">Backend URL in <code>config.js</code>: <code>${esc(BASE||'(same origin)')}</code>. Check that it is your deployed API address, that <code>${esc(BASE)}/api/health</code> opens, and that <code>DUB_CORS_ORIGINS</code> on the server equals <code>${esc(location.origin)}</code>.</p><p class="row" style="margin-top:14px"><a class="btn" href="#token">Enter access token</a></p></div>`
+  }
+})()
 </script></body></html>
