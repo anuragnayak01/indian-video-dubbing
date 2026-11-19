@@ -43,39 +43,43 @@ function showTokenGate(msg){
     _authWait=resolve
     $('#app').innerHTML=`<div class="card" style="max-width:480px;margin:60px auto">
       <h2 style="margin-bottom:8px">Access token</h2>
-      <p class="mut" style="margin:0 0 16px">This server requires a token (from Render → Environment → <code>DUB_ACCESS_TOKEN</code>). Enter it once; it is stored in this browser only.</p>
-      ${msg?`<div class="err-box" style="margin-bottom:14px">${esc(msg)}</div>`:''}
+      <p class="mut" style="margin:0 0 16px">Paste <code>DUB_ACCESS_TOKEN</code> from Render → your service → Environment. It is stored only in this browser.</p>
+      <div id="tokerr"${msg?'':' style="display:none"'} class="err-box" style="margin-bottom:14px">${esc(msg||'')}</div>
       <label class="mut" style="display:block;font-size:12px;margin-bottom:6px">Token</label>
-      <input id="tokin" type="password" autocomplete="off" placeholder="Paste DUB_ACCESS_TOKEN" style="margin-bottom:12px">
+      <input id="tokin" type="text" autocomplete="off" spellcheck="false" placeholder="Paste DUB_ACCESS_TOKEN here" style="margin-bottom:12px;font-family:ui-monospace,monospace">
       <div class="row">
         <button class="btn" id="tokgo">Continue</button>
-        <button class="btn g" id="tokclr" type="button">Clear saved token</button>
+        <button class="btn g" id="tokclr" type="button">Clear saved</button>
+        <span id="tokst" class="mut"></span>
       </div>
+      <p class="mut" style="margin-top:14px;font-size:12px">Backend: <code>${esc(BASE||'(not set)')}</code></p>
     </div>`
     const go=()=>{
       const t=($('#tokin').value||'').trim()
+      const err=$('#tokerr')
       if(!t){
-        const box=$('.err-box')
-        if(box)box.textContent='Token is required.'
-        else $('#tokin').insertAdjacentHTML('beforebegin','<div class="err-box" style="margin-bottom:14px">Token is required.</div>')
+        err.style.display='';err.textContent='Token is required.'
         return
       }
       setTok(t)
+      $('#tokgo').disabled=true
+      $('#tokst').textContent='Checking…'
       const r=_authWait;_authWait=null
       if(r)r(t)
     }
     $('#tokgo').onclick=go
-    $('#tokin').onkeydown=e=>{if(e.key==='Enter')go()}
-    $('#tokclr').onclick=()=>{setTok('');$('#tokin').value='';$('#tokin').focus()}
+    $('#tokin').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();go()}}
+    $('#tokclr').onclick=()=>{setTok('');$('#tokin').value='';$('#tokst').textContent='';$('#tokin').focus()}
     $('#tokin').focus()
   })
 }
 async function api(u,o={}){
-  o={...o,headers:{...(o.headers||{}),'X-Access-Token':tok()}}
-  const r=await fetch(BASE+'/api'+u,o)
+  // Always read a fresh token; do not reuse a previous headers object (stale token bug).
+  const opts={...o,headers:{...(o.headers||{}),'X-Access-Token':tok()}}
+  const r=await fetch(BASE+'/api'+u,opts)
   if(r.status===401){
     await showTokenGate(tok()?'Token rejected. Paste the current DUB_ACCESS_TOKEN from Render.':'Access token required.')
-    return api(u,o)
+    return api(u,o)  // retry with original options; header is rebuilt above
   }
   if(!r.ok){let m=r.statusText;try{m=(await r.json()).detail||m}catch{}throw new Error(m)}
   return r.json()
