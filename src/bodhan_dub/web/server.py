@@ -54,6 +54,7 @@ def _startup_log() -> None:
              cors=",".join(CORS_ORIGINS) or "none", concurrency=os.environ.get("DUB_CONCURRENCY", "2"), data_dir=str(DATA))
 
 
+STARTED = time.time()
 JOB_LOCK = threading.Lock()      # the logger is process-wide, so jobs run one at a time
 JOBS: dict[str, dict] = {}
 OVERRIDE_FIELDS = {"text", "english", "voice", "style", "speed", "max_stretch"}
@@ -171,7 +172,7 @@ _startup_log()
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "auth": bool(ACCESS_TOKEN)}
+    return {"ok": True, "auth": bool(ACCESS_TOKEN), "uptime_s": int(time.time() - STARTED)}
 
 
 @app.get("/config.js")
