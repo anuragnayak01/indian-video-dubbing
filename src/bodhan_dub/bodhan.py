@@ -1,7 +1,7 @@
 """Client for the three Bodhan models used by the pipeline. Every ASR, MT and TTS call goes through here.
 
 - Indic-Transcribe: POST /v1/audio/transcriptions   (multipart, <=30 s of audio, returns {"text"})
-- Indic-Translate:  POST /translate                 (JSON, returns {"translation", "truncated", "usage"})
+- Indic-Translate:  POST /v1/chat/completions       (OpenAI-compatible; dedicated /translate is currently 404)
 - Indic-Speak:      POST /v1/audio/speech           (JSON, returns PCM16 24 kHz mono WAV)
 
 Retries with exponential backoff on 429/5xx, a global concurrency limit, an on-disk cache so
@@ -146,42 +146,50 @@ class BodhanClient:
         return text
 
     # ---- Indic-Translate ----
-    TRANSLATE_PATHS = ("/translate", "/v1/translate")   # documented path first; the second is a fallback on 404
-
-    def _post_translate(self, body: dict):
-        paths = [os.environ["BODHAN_TRANSLATE_PATH"]] if os.environ.get("BODHAN_TRANSLATE_PATH") else list(self.TRANSLATE_PATHS)
-        start = getattr(self, "_tpath", None)
-        if start in paths:
-            paths.remove(start)
-            paths.insert(0, start)
-        err = None
-        for path in paths:
-            try:
-                r = self._request("translate", "translate", lambda path=path: self.http.post(
-                    f"{self.base}{path}", headers=self._auth(self.keys.translate), json=body))
-                self._tpath = path
-                return r
-            except BodhanError as e:
-                if e.status != 404:
-                    raise
-                log("translate_path_not_found", path=path, detail=str(e)[:200])
-                err = e
-        raise err
-
+    # The dedicated POST /translate endpoint advertised in the docs currently returns 404.
+    # The live path is the OpenAI-compatible chat completions endpoint.
     def translate(self, text: str, lang: str, script: str = "native") -> dict:
         key = self._ck("mt", text, lang, script)
         hit = self._cget(key, "json")
         if hit:
             self.meter.add("translate", cache_hits=1)
             return json.loads(hit)
-        body = {"text": text, "target_language": lang}
+
+        body = {
+            "model": "indic-translate",
+            "messages": [{"role": "user", "content": text}],
+            "target_language_code": lang,
+        }
         if script != "native":
-            body["script"] = script
-        r = self._post_translate(body)
+            body["target_script"] = script
+
+        r = self._request(
+            "translate",
+            "translate",
+            lambda: self.http.post(
+                f"{self.base}/v1/chat/completions",
+                headers=self._auth(self.keys.translate),
+                json=body,
+            ),
+        )
         j = r.json()
-        tokens = (j.get("usage") or {}).get("output_tokens") or (j.get("usage") or {}).get("completion_tokens") \
-            or max(1, len(j.get("translation", "")) // 2)
-        out = {"text": (j.get("translation") or "").strip(), "truncated": bool(j.get("truncated")), "tokens": tokens}
+
+        # chat-completions response shape
+        content = ""
+        try:
+            content = (j["choices"][0]["message"]["content"] or "").strip()
+        except (KeyError, IndexError, TypeError):
+            # defensive: fall back to older /translate shape if it ever returns
+            content = (j.get("translation") or "").strip()
+
+        tokens = (
+            (j.get("usage") or {}).get("completion_tokens")
+            or (j.get("usage") or {}).get("output_tokens")
+            or max(1, len(content) // 2)
+        )
+        truncated = bool(j.get("truncated", False))
+
+        out = {"text": content, "truncated": truncated, "tokens": tokens}
         self.meter.add("translate", cost_inr=tokens / 10000 * config.PRICE_TRANSLATE_PER_10K_TOKENS)
         if not out["truncated"]:  # never cache a cut-off translation
             self._cput(key, "json", json.dumps(out, ensure_ascii=False).encode())
