@@ -203,6 +203,16 @@ def diagnose(request: Request):
                                  "request_id": r.headers.get("x-request-id", "")})
         except Exception as e:
             out["tests"].append({"call": "translate POST " + path, "error": f"{type(e).__name__}: {e}"[:200]})
+    # Which key actually serves translate? Try each variable's key on /translate (a few tokens each).
+    out["translate_with_each_key"] = {}
+    for name, k in (("BODHAN_TRANSCRIBE_KEY", keys.transcribe), ("BODHAN_TRANSLATE_KEY", keys.translate), ("BODHAN_SPEAK_KEY", keys.speak)):
+        try:
+            r = httpx.post(base + "/translate", headers={"Authorization": f"Bearer {k.strip()}"}, timeout=30,
+                           json={"text": "Hello", "target_language": "hi"})
+            out["translate_with_each_key"][name] = {"status": r.status_code, "server": r.headers.get("server", ""),
+                                                    "has_request_id": bool(r.headers.get("x-request-id")), "body": r.text[:120]}
+        except Exception as e:
+            out["translate_with_each_key"][name] = {"error": f"{type(e).__name__}: {e}"[:120]}
     try:
         c = BodhanClient(keys, None, max_attempts=1, backoff=0)
         wav = c.speak("नमस्ते", config.DEFAULT_VOICES["male"], "hi")
