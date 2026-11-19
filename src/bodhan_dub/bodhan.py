@@ -116,10 +116,7 @@ class BodhanClient:
                     code = r.json().get("error", {}).get("code")
                 except Exception:
                     pass
-<<<<<<< HEAD:video_dubbing/src/bodhan_dub/bodhan.py
                 log("api_error", api=label, status=r.status_code, body=r.text[:300], request_id=r.headers.get("x-request-id", ""))
-=======
->>>>>>> 875a8f91f0123b7b8e063d6045f9c98d7742dc00:src/bodhan_dub/bodhan.py
                 raise BodhanError(f"{label}: HTTP {r.status_code}: {r.text[:300]}{hint(r.status_code, 'indic-' + model)}", r.status_code, code)
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 last = BodhanError(f"{label}: {type(e).__name__}")
