@@ -156,6 +156,15 @@ video{width:100%;max-height:440px;background:#1F1B14;border-radius:12px}
  .lane{margin-top:28px}.lane .lab{top:-22px;left:0;width:auto}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+
+/* gate */
+body.locked header.top,body.locked main,body.locked footer.foot{filter:blur(10px);user-select:none;pointer-events:none}
+#gate{position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:16px;background:rgba(250,247,240,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);overflow:auto}
+.gcard{background:#fff;border:1px solid var(--line);border-radius:24px;box-shadow:0 24px 60px rgba(60,45,10,.18);width:100%;max-width:440px;padding:28px}
+.srv{display:flex;gap:12px;align-items:center;font-weight:600;min-height:28px}
+.dot{width:12px;height:12px;border-radius:50%;background:#cdbf9f;flex:none}
+.dot.ok{background:#2E7D4F}.dot.bad{background:#B3261E}.dot.wait{background:var(--gold);animation:pls 1.2s ease-in-out infinite}
+@keyframes pls{50%{opacity:.35}}
 </style></head><body>
 <a class="skip" href="#app">Skip to main content</a>
 <header class="top"><div class="hbar">
@@ -164,7 +173,7 @@ video{width:100%;max-height:440px;background:#1F1B14;border-radius:12px}
   <a data-r="" href="#"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Projects</span></a>
   <a data-r="new" href="#new"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New project</span></a>
   <a data-r="test" href="#test"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Test connection</span></a>
-  <a data-r="token" href="#token" id="navtok"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/></svg><span>Access token</span></a>
+  <a data-r="token" href="#token" id="navtok"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/></svg><span>Lock</span></a>
  </nav>
  <span class="sp"></span>
  <div class="qs"><label class="sr" for="jump">Jump to a project or tool</label><input id="jump" type="search" list="jumplist" placeholder="Jump to…" autocomplete="off"><datalist id="jumplist"></datalist></div>
@@ -174,52 +183,87 @@ video{width:100%;max-height:440px;background:#1F1B14;border-radius:12px}
 <script src="config.js"></script>
 <script>
 const BASE=(window.DUB_API||'').replace(/\/$/,'')
-const tok=()=>{try{return localStorage.getItem('dub_token')||''}catch{return ''}}
-const setTok=t=>{try{if(t)localStorage.setItem('dub_token',t);else localStorage.removeItem('dub_token')}catch{}}
+let _mem=''
+try{localStorage.removeItem('dub_token')}catch{}
+const tok=()=>{try{return sessionStorage.getItem('dub_token')||_mem}catch{return _mem}}
+const setTok=t=>{_mem=t||'';try{if(t)sessionStorage.setItem('dub_token',t);else sessionStorage.removeItem('dub_token')}catch{}}
 const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)]
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
-let _authWait=null
-function showTokenGate(msg){
-  return new Promise(resolve=>{
-    _authWait=resolve
-    $('#app').innerHTML=`<div class="card" style="max-width:480px;margin:60px auto">
-      <h1 class="pt" style="margin-bottom:8px">Access token</h1>
-      <p class="mut" style="margin:0 0 16px">Paste <code>DUB_ACCESS_TOKEN</code> from Render → your service → Environment. It is stored only in this browser.</p>
-      <div id="tokerr" class="err-box" role="alert"${msg?'':' hidden'}>${esc(msg||'')}</div>
-      <label class="mut" for="tokin" style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Token</label>
-      <input id="tokin" type="password" autocomplete="off" spellcheck="false" placeholder="Paste DUB_ACCESS_TOKEN here" style="margin-bottom:12px;font-family:ui-monospace,monospace">
-      <div class="row">
-        <button class="btn" id="tokgo">Continue</button>
-        <button class="btn g" id="tokclr" type="button">Clear saved</button>
-        <span id="tokst" class="mut" role="status"></span>
-      </div>
-      <p class="mut" style="margin-top:14px;font-size:12px">Backend: <code>${esc(BASE||'(not set)')}</code></p>
-    </div>`
-    const go=()=>{
-      const t=($('#tokin').value||'').trim()
-      const err=$('#tokerr')
-      if(!t){
-        err.hidden=false;err.textContent='Token is required.'
-        return
-      }
-      setTok(t)
-      $('#tokgo').disabled=true
-      $('#tokst').textContent='Checking…'
-      const r=_authWait;_authWait=null
-      if(r)r(t)
-    }
-    $('#tokgo').onclick=go
-    $('#tokin').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();go()}}
-    $('#tokclr').onclick=()=>{setTok('');$('#tokin').value='';$('#tokst').textContent='';$('#tokin').focus()}
-    $('#tokin').focus()
-  })
+// ---------------- gate: server check, then access token. Everything behind it stays blurred and inert.
+let UNLOCK=null
+const PREVIEW=`<section class="hero" aria-hidden="true"><div style="font-family:var(--serif);font-size:clamp(34px,6vw,60px);line-height:1.08;margin:8px 0 16px">Every voice.<br><span class="gold">Every Indian language.</span></div><p>Upload an English video, pick the languages, and review every dubbed sentence.</p></section><div class="card" style="height:130px" aria-hidden="true"></div><div class="card" style="height:130px;margin-top:16px" aria-hidden="true"></div>`
+function setLocked(on){
+  document.body.classList.toggle('locked',on)
+  $$('header.top,main,footer.foot').forEach(e=>{if(on){e.setAttribute('inert','');e.setAttribute('aria-hidden','true')}else{e.removeAttribute('inert');e.removeAttribute('aria-hidden')}})
 }
+async function ping(ms=8000){
+  try{const ac=new AbortController(),to=setTimeout(()=>ac.abort(),ms);const r=await fetch(BASE+'/api/health',{cache:'no-store',signal:ac.signal});clearTimeout(to)
+    if(!r.ok)return{ok:false,msg:'HTTP '+r.status};return{ok:true,...(await r.json())}}catch{return{ok:false,msg:'no answer'}}
+}
+function unlock(msg){
+  if(UNLOCK)return UNLOCK
+  UNLOCK=new Promise(resolve=>{
+    if(!CFG)$('#app').innerHTML=PREVIEW
+    setLocked(true)
+    const g=document.createElement('div');g.id='gate';g.setAttribute('role','dialog');g.setAttribute('aria-modal','true');g.setAttribute('aria-labelledby','gt')
+    g.innerHTML=`<div class="gcard">
+      <div class="brand" style="margin:0 0 6px"><i aria-hidden="true"></i>Dub Studio</div>
+      <h1 id="gt" class="pt">Sign in</h1>
+      <p class="mut" style="margin:0 0 18px">Start the server, then enter the access token to continue.</p>
+      <div class="srv"><span id="gdot" class="dot wait" aria-hidden="true"></span><span id="gs" role="status" aria-live="polite">Checking the server…</span></div>
+      <p class="row" style="margin:12px 0 18px"><button type="button" class="btn sm" id="gstart" hidden>Start server</button></p>
+      <div id="gerr" class="err-box" role="alert" hidden></div>
+      <form id="gform" autocomplete="off">
+        <label for="gtok" style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Access token</label>
+        <input id="gtok" type="password" autocomplete="off" spellcheck="false" placeholder="DUB_ACCESS_TOKEN" style="margin-bottom:14px;font-family:ui-monospace,monospace" disabled>
+        <button class="btn" id="ggo" type="submit" disabled style="width:100%">Unlock</button>
+      </form>
+      <p class="mut" style="margin:14px 0 0;font-size:12px">Backend: <code>${esc(BASE||'(not set)')}</code> · the token is kept only for this browser tab.</p>
+    </div>`
+    document.body.appendChild(g)
+    const dot=$('#gdot',g),st=$('#gs',g),btn=$('#gstart',g),err=$('#gerr',g),inp=$('#gtok',g),go=$('#ggo',g)
+    const setSrv=(k,t)=>{dot.className='dot '+k;st.textContent=t}
+    const showErr=m=>{err.hidden=!m;err.textContent=m||''}
+    const finish=cfg=>{CFG=cfg;g.remove();setLocked(false);UNLOCK=null;resolve(cfg)}
+    let up=false,busy=false
+    const tryTok=async(t,quiet)=>{
+      if(busy)return;busy=true;go.disabled=true;showErr('')
+      try{const r=await fetch(BASE+'/api/config',{headers:{'X-Access-Token':t}})
+        if(r.status===401){setTok('');if(!quiet)showErr('That token was not accepted. Copy DUB_ACCESS_TOKEN from Render → your service → Environment.');inp.value='';inp.focus();return}
+        if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.statusText)
+        const cfg=await r.json();setTok(t);finish(cfg)}
+      catch(e){showErr(e.message||'Could not reach the server.')}
+      finally{busy=false;if(g.isConnected)go.disabled=!up}
+    }
+    const serverUp=h=>{
+      up=true;btn.hidden=true;setSrv('ok','Server is running');inp.disabled=false;go.disabled=false
+      if(!h.auth){tryTok('',true);return}
+      if(tok())tryTok(tok(),true);else inp.focus()
+    }
+    const down=m=>{up=false;setSrv('bad',m||'Server is not running');btn.hidden=false;btn.disabled=false;inp.disabled=true;go.disabled=true;btn.focus()}
+    const wake=async()=>{
+      btn.disabled=true;showErr('');const t0=Date.now()
+      for(let i=0;i<45;i++){
+        setSrv('wait',`Starting the server… ${Math.round((Date.now()-t0)/1000)} s (Render can take 1–2 minutes)`)
+        const h=await ping();if(h.ok){serverUp(h);return}
+        await new Promise(r=>setTimeout(r,3000))
+      }
+      down('No answer after about 2 minutes. Open Render → your service → Logs: the server may have crashed on startup.')
+    }
+    btn.onclick=wake
+    $('#gform',g).onsubmit=e=>{e.preventDefault();const t=inp.value.trim();if(!t){showErr('Enter the access token.');inp.focus();return}tryTok(t,false)}
+    if(msg){setTok('');showErr(msg)}
+    ;(async()=>{const h=await ping();h.ok?serverUp(h):down('Server is not running')})()
+  })
+  return UNLOCK
+}
+function lock(){setTok('');CFG=null;history.replaceState(null,'',location.pathname+location.search);unlock().then(()=>route())}
 async function api(u,o={}){
   // Always read a fresh token; do not reuse a previous headers object (stale token bug).
   const opts={...o,headers:{...(o.headers||{}),'X-Access-Token':tok()}}
   const r=await fetch(BASE+'/api'+u,opts)
   if(r.status===401){
-    await showTokenGate(tok()?'Token rejected. Paste the current DUB_ACCESS_TOKEN from Render.':'Access token required.')
+    await unlock(tok()?'Token rejected. Enter the current access token.':'')
     return api(u,o)  // retry with original options; header is rebuilt above
   }
   if(!r.ok){let m=r.statusText;try{m=(await r.json()).detail||m}catch{}throw new Error(m)}
@@ -239,7 +283,7 @@ async function pingBackend(){const t0=performance.now(),ac=new AbortController()
 const li=(c,t,d)=>`<li><span class="ic ${c}" aria-hidden="true">${c=='ok'?'✓':c=='no'?'✗':'!'}</span><span><b>${t}</b>${d?`<br><span class="mut">${d}</span>`:''}</span></li>`
 async function runDiag(){const o=$('#diagout');o.innerHTML='<p class="mut" style="margin:0">Checking the Render backend… a sleeping free server can take up to a minute to wake.</p>'
  const hp=await pingBackend(),rows=[]
- if(!hp.ok){o.innerHTML=`<ul>${li('no','Backend (Render) is not reachable',esc(hp.msg)+' · '+esc(BASE||'(same origin)'))}</ul>`;return}
+ if(!hp.ok){o.innerHTML=`<ul>${li('no','Backend (Render) is not running',esc(hp.msg)+' · '+esc(BASE||'(same origin)'))}</ul><p class="row" style="margin:4px 0 12px"><button type="button" class="btn sm" onclick="wakeUp($('#wkst'),this)">Start server</button></p><p id="wkst" class="mut" role="status" aria-live="polite" style="margin:0 0 12px"></p>`;return}
  const up=hp.j.uptime_s
  rows.push(li(hp.ms>4000?'wt':'ok',`Backend (Render) is running · replied in ${hp.ms} ms`,hp.ms>4000?'It was asleep and has just woken up. Free plans are slow on the first request.':up!=null?`Up for ${fmtUp(up)}${up<120?' (just started or restarted)':''}`:''))
  rows.push(li(hp.j.auth?'ok':'wt','Access token protection '+(hp.j.auth?'is on':'is OFF'),hp.j.auth?'':'Set DUB_ACCESS_TOKEN on the server.'))
@@ -256,47 +300,13 @@ async function runDiag(){const o=$('#diagout');o.innerHTML='<p class="mut" style
  const sp=d.tests.find(t=>t.call=='speak'),spok=sp&&sp.status==200
  rows.push(li(spok?'ok':'no',spok?'Speak works':'Speak fails',spok?'':esc(sp?.error||'')))
  o.innerHTML=`<ul>${rows.join('')}</ul><details><summary>Technical details</summary><pre>${esc(JSON.stringify(d,null,2))}</pre></details>`}
-async function route(){clearInterval(TIMER);const [v,id,l,t]=location.hash.slice(1).split('/');if(v==='test'){TESTNEXT=true;location.hash='#';return}
+async function route(){if(!CFG)return;clearInterval(TIMER);const [v,id,l,t]=location.hash.slice(1).split('/');if(v==='token'){lock();return}if(v==='test'){TESTNEXT=true;location.hash='#';return}
  const cur=v==='p'?'':(v||'');$$('nav a').forEach(a=>{const on=(a.dataset.r||'')===cur;a.classList.toggle('on',on);on?a.setAttribute('aria-current','page'):a.removeAttribute('aria-current')});
  window.scrollTo(0,0);
- if(v=='token')return renderTokenPage();if(v=='new')return renderNew();if(v=='p'&&id){LANG=l||LANG;TAB=t||TAB;return openProject(id)}return renderHome()}
-function renderTokenPage(){
-  const has=!!tok()
-  $('#app').innerHTML=`<div class="card" style="max-width:520px;margin:40px auto">
-    <h1 class="pt" style="margin-bottom:8px">Access token</h1>
-    <p class="mut" style="margin:0 0 16px">From Render → your service → Environment → <code>DUB_ACCESS_TOKEN</code>. Stored only in this browser.</p>
-    <div id="tokerr" class="err-box" role="alert" hidden></div>
-    <div id="tokok" class="mut" role="status" style="margin-bottom:12px">${has?'A token is saved in this browser.':'No token saved yet.'}</div>
-    <label class="mut" for="tokin" style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Token</label>
-    <input id="tokin" type="password" autocomplete="off" spellcheck="false" placeholder="Paste DUB_ACCESS_TOKEN" style="margin-bottom:12px;font-family:ui-monospace,monospace" value="">
-    <div class="row">
-      <button class="btn" id="toksave">Save token</button>
-      <button class="btn g" id="tokclr" type="button">Clear</button>
-      <span id="tokst" class="mut" role="status"></span>
-    </div>
-    <p class="mut" style="margin-top:14px;font-size:12px">Backend: <code>${esc(BASE||'(not set)')}</code></p>
-  </div>`
-  $('#toksave').onclick=async()=>{
-    const t=($('#tokin').value||'').trim()
-    const err=$('#tokerr'),st=$('#tokst')
-    if(!t){err.hidden=false;err.textContent='Token is required.';return}
-    setTok(t);err.hidden=true;st.textContent='Checking…';$('#toksave').disabled=true
-    try{
-      const r=await fetch(BASE+'/api/config',{headers:{'X-Access-Token':t}})
-      if(r.status===401){err.hidden=false;err.textContent='Token rejected by server. Copy DUB_ACCESS_TOKEN again from Render.';st.textContent='';setTok('');$('#toksave').disabled=false;return}
-      if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.statusText)
-      CFG=await r.json();st.textContent='Saved · connected';$('#tokok').textContent='Token saved.';$('#toksave').disabled=false
-      setTimeout(()=>location.hash='#',600)
-    }catch(e){err.hidden=false;err.textContent=e.message||'Could not reach backend';st.textContent='';$('#toksave').disabled=false}
-  }
-  $('#tokclr').onclick=()=>{setTok('');$('#tokin').value='';$('#tokok').textContent='No token saved yet.';$('#tokst').textContent='Cleared';$('#tokin').focus()}
-  $('#tokin').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#toksave').click()}}
-  $('#tokin').focus()
-}
-
+ if(v=='new')return renderNew();if(v=='p'&&id){LANG=l||LANG;TAB=t||TAB;return openProject(id)}return renderHome()}
 // ---------------- home
 let PS=[],FILT='all',TESTNEXT=false
-const JUMP=new Map([['Projects','#'],['New project','#new'],['Test Bodhan connection','#test'],['Access token','#token']])
+const JUMP=new Map([['Projects','#'],['New project','#new'],['Test Bodhan connection','#test'],['Lock','#token']])
 function fillJump(ps){const dl=$('#jumplist');if(!dl)return;[...JUMP.keys()].filter(k=>k.startsWith('Project: ')).forEach(k=>JUMP.delete(k))
  ps.forEach(p=>{let k='Project: '+p.name;if(JUMP.has(k))k+=' ('+p.id.slice(0,4)+')';JUMP.set(k,'#p/'+p.id)})
  dl.innerHTML=[...JUMP.keys()].map(k=>`<option value="${esc(k)}"></option>`).join('')}
@@ -310,12 +320,12 @@ async function renderHome(){PS=await api('/projects');fillJump(PS)
  $('#app').innerHTML=`<section class="hero" aria-labelledby="hh"><h1 id="hh">Every voice.<br><span class="gold">Every Indian language.</span></h1><p>Upload an English video, pick the languages, and review every dubbed sentence: translation, voice, style and speed, with the checks that caught repeats, gaps and drift.</p><button type="button" class="btn" onclick="location.hash='#new'">Start a new project</button></section>
  <section class="qa" aria-label="Quick actions"><div class="search"><label class="sr" for="q">Search projects</label><input id="q" type="search" placeholder="Search projects…" autocomplete="off"></div>
  <div class="chips" id="flt" role="group" aria-label="Filter by status">${[['all','All'],['running','Running'],['done','Done'],['attention','Needs attention']].map(([k,n])=>`<button type="button" class="chip ${FILT==k?'on':''}" data-f="${k}" aria-pressed="${FILT==k}">${n}</button>`).join('')}</div>
- <button type="button" class="btn g sm" id="diag">Test Bodhan connection</button><button type="button" class="btn g sm" id="gotok">Access token</button></section>
- <p class="status mut" role="status">${CFG.missing_keys.length?'':'Keys loaded · '}${CFG.llm?'LLM connected':'No LLM configured (rule-based fallbacks)'} · ${tok()?'token saved':'<span class="bad">no token</span>'}</p>
+ <button type="button" class="btn g sm" id="diag">Test Bodhan connection</button><button type="button" class="btn g sm" id="gotok">Lock</button></section>
+ <p class="status mut" role="status">${CFG.missing_keys.length?'':'Keys loaded · '}${CFG.llm?'LLM connected':'No LLM configured (rule-based fallbacks)'} · unlocked</p>
  <div id="diagout" class="diag" role="status" aria-live="polite"></div>
  ${CFG.missing_keys.length?`<div class="err-box" role="alert">Missing environment variables: ${CFG.missing_keys.join(', ')}. Add them to .env and restart.</div>`:''}
  <h2>Your projects <span id="count" class="mut cnt"></span></h2><div id="plist" style="margin-top:14px"></div>`
- $('#diag').onclick=runDiag;$('#gotok').onclick=()=>location.hash='#token';$('#q').oninput=drawProjects
+ $('#diag').onclick=runDiag;$('#gotok').onclick=lock;$('#q').oninput=drawProjects
  $$('#flt .chip').forEach(c=>c.onclick=()=>{FILT=c.dataset.f;$$('#flt .chip').forEach(x=>{x.classList.toggle('on',x===c);x.setAttribute('aria-pressed',x===c)});drawProjects()})
  drawProjects();if(TESTNEXT){TESTNEXT=false;runDiag();$('#diagout').scrollIntoView({block:'center'})}}
 async function delP(id){if(confirm('Delete this project and its outputs?')){await api('/projects/'+id,{method:'DELETE'});renderHome()}}
@@ -417,11 +427,11 @@ function reportPane(el){const r=P.report;if(!r){el.innerHTML='<div class="card m
  <div style="margin-top:12px"><b>Targets missed</b>${misses.length?`<ul>${misses.join('')}</ul>`:'<div class="mut">None.</div>'}</div><div class="mut">Total ₹${r.cost_inr} · about ₹${perMin} per minute of video per language · ${r.total_seconds}s wall time.</div></div>
  <div class="card"><h2 class="ct">Downloads</h2><div class="row">${P.langs.map(l=>`<a class="btn g sm" href="${BASE}/api/projects/${pid}/file/video?lang=${l}" download="video.${l}.mp4">${lname(l)} video</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/srt?lang=${l}" download="subtitles.${l}.srt">${lname(l)} SRT</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/segments?lang=${l}" download="segments.${l}.json">${lname(l)} segments</a>`).join('')}<a class="btn g sm" href="${BASE}/api/projects/${pid}/file/transcript" download="transcript.en.json">English transcript</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/report" download="report.json">report.json</a><a class="btn g sm" href="${BASE}/api/projects/${pid}/file/log" download="run.log.jsonl">Structured log</a></div></div>`}
 
-;(async()=>{
-  try{CFG=await api('/config');route();api('/projects').then(fillJump).catch(()=>{})}
-  catch(e){
-    if(String(e.message||'').toLowerCase().includes('token')){location.hash='#token';renderTokenPage();return}
-    $('#app').innerHTML=`<div class="card" style="max-width:640px;margin:40px auto"><h2 class="ct">Cannot reach the backend</h2><p>${esc(e.message)}</p><p class="mut">Backend URL in <code>config.js</code>: <code>${esc(BASE||'(same origin)')}</code>. Check that it is your deployed API address, that <code>${esc(BASE)}/api/health</code> opens, and that <code>DUB_CORS_ORIGINS</code> on the server equals <code>${esc(location.origin)}</code>.</p><p class="mut">On Render's free plan the server sleeps when idle and can take up to a minute to wake. Wait a moment, then try again.</p><p class="row" style="margin-top:14px"><button type="button" class="btn" onclick="location.reload()">Try again</button><a class="btn g" href="#token">Enter access token</a></p></div>`
-  }
-})()
+// ---- start / wake the backend (Render free plans sleep when idle and wake on the next request)
+async function wakeUp(st,btn){if(btn)btn.disabled=true;const t0=Date.now()
+ for(let i=0;i<45;i++){const s=Math.round((Date.now()-t0)/1000);st.textContent=`Starting the server… ${s} s. Render can take 1–2 minutes to wake.`
+  try{const ac=new AbortController(),to=setTimeout(()=>ac.abort(),8000);const r=await fetch(BASE+'/api/health',{cache:'no-store',signal:ac.signal});clearTimeout(to);if(r.ok){st.textContent='Server is running. Loading…';location.reload();return}}catch{}
+  await new Promise(r=>setTimeout(r,3000))}
+ st.textContent='No answer after about 2 minutes. Open the Render dashboard, your service, then Logs: the server may have crashed on startup.';if(btn)btn.disabled=false}
+;(async()=>{await unlock();route();api('/projects').then(fillJump).catch(()=>{})})()
 </script></body></html>
