@@ -51,7 +51,7 @@ def _startup_log() -> None:
     logs.log("server_start", base_url=config.BASE_URL, transcribe_key="set" if k.transcribe else "MISSING",
              translate_key="set" if k.translate else "MISSING", speak_key="set" if k.speak else "MISSING",
              llm=f"{os.environ.get('LLM_MODEL') or 'not configured'}", access_token="set" if ACCESS_TOKEN else "NOT SET (open to anyone)",
-             cors=",".join(CORS_ORIGINS) or "none", concurrency=os.environ.get("DUB_CONCURRENCY", "2"), data_dir=str(DATA))
+             cors=",".join(CORS_ORIGINS) or "none", concurrency=os.environ.get("DUB_CONCURRENCY", "1"), data_dir=str(DATA))
 
 
 STARTED = time.time()
@@ -283,7 +283,7 @@ async def create_project(file: UploadFile = File(...), langs: str = Form("hi,ta,
         while chunk := await file.read(1 << 20):
             fh.write(chunk)
     m = {"name": name or Path(file.filename or "video").stem, "input": f"input{ext}", "langs": lang_list, "code_mixed": code_mixed,
-         "style": style, "created": time.time(), "concurrency": int(os.environ.get("DUB_CONCURRENCY", "2"))}
+         "style": style, "created": time.time(), "concurrency": int(os.environ.get("DUB_CONCURRENCY", "1"))}
     save_meta(pid, m)
     start_job(pid, lang_list, merge=False)
     return {"id": pid, **m}
