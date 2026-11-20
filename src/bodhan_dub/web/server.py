@@ -100,12 +100,35 @@ def start_job(pid: str, langs: list[str], merge: bool) -> None:
                     raise RuntimeError("Missing environment variables: " + ", ".join(keys.missing()))
                 out.mkdir(exist_ok=True)
                 logs.setup(log_file, echo=True, tag=pid)
-                client = BodhanClient(keys, out / "work" / "cache", max_concurrency=m.get("concurrency", 4))
+                api_concurrency = max(1, int(os.environ.get("DUB_CONCURRENCY", "1")))
+
+                client = BodhanClient(
+                    keys,
+                    out / "work" / "cache",
+                    max_concurrency=api_concurrency
+                )
+                
                 gl, vo = DATA / pid / "glossary.yaml", DATA / pid / "voices.yaml"
-                opt = Options(input=DATA / pid / m["input"], langs=langs, out=out, glossary=gl if gl.exists() else None,
-                              voices=vo if vo.exists() else None, code_mixed=m.get("code_mixed", False),
-                              concurrency=m.get("concurrency", 4), style=m.get("style") or None, merge=merge)
-                logs.log("job_start", langs=",".join(langs), merge=merge, concurrency=m.get("concurrency"), llm=Brain().available)
+                
+                opt = Options(
+                    input=DATA / pid / m["input"],
+                    langs=langs,
+                    out=out,
+                    glossary=gl if gl.exists() else None,
+                    voices=vo if vo.exists() else None,
+                    code_mixed=m.get("code_mixed", False),
+                    concurrency=api_concurrency,
+                    style=m.get("style") or None,
+                    merge=merge
+                )
+                
+                logs.log(
+                    "job_start",
+                    langs=",".join(langs),
+                    merge=merge,
+                    concurrency=api_concurrency,
+                    llm=Brain().available
+                )
                 rc = run_pipeline(opt, client, Brain())
                 logs.log("job_end", exit_code=rc)
                 job["state"] = "done" if rc == 0 else "finished_with_errors"
