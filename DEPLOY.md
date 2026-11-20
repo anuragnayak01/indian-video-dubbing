@@ -26,3 +26,11 @@ After changing `src/bodhan_dub/web/index.html`, run `make frontend` to refresh t
 
 ## Security
 Anyone with the token can spend your Bodhan credit. Keep it private; rotate it in Render if leaked. Media links (`/file/`) are protected only by the unguessable project id.
+
+## If the site says the backend is not reachable
+
+On Render's free plan the server sleeps after ~15 minutes idle. Open the site and press **Start server** (also in **Test connection**); it polls `/api/health` and reloads when the server answers (30-90 s). If it still does not answer after about 2 minutes, the service crashed or is suspended: open Render, your service, **Logs**. A website cannot restart a crashed service.
+
+## Sign-in screen
+
+The site opens on a blurred sign-in card. Step 1 checks the Render server (press **Start server** if it is asleep; it waits up to 2 minutes). Step 2 asks for `DUB_ACCESS_TOKEN`. Only then do Projects and New project appear. The token is kept per browser tab, so a new visit asks again; **Lock** in the menu signs out.

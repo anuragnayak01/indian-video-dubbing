@@ -5,7 +5,7 @@ import soundfile as sf
 from conftest import FakeLLM
 from fake_bodhan import FakeBodhan
 
-from bodhan_dub import audio
+from bodhan_dub import audio, config
 
 S1 = "[hi] this is spoken sentence number 1."
 
@@ -138,3 +138,32 @@ def test_manual_override_text_is_used_verbatim(run, tmp_path):
 
 def test_llm_is_optional(run):
     assert run(langs=("hi",), llm=None).rc == 0
+
+
+def test_style_reaches_indic_speak_and_none_overrides_project_style(run, tmp_path):
+    out = tmp_path / "st"
+    (out / "hi").mkdir(parents=True)
+    (out / "hi" / "overrides.json").write_text(json.dumps({"1": {"style": "none"}, "2": {"style": "sad"}}))
+    r = run(langs=("hi",), out=out, style="anger")
+    by_idx = {s["idx"]: s for s in segs(r.out, "hi")}
+    assert by_idx[0]["style"] == "anger" and by_idx[1]["style"] is None and by_idx[2]["style"] == "sad"
+    styles = {t["text"]: t["instr"].get("style") for t in r.fake.tts_log}
+    assert styles[by_idx[0]["translation"]] == "anger"
+    assert "style" not in next(t["instr"] for t in r.fake.tts_log if t["text"] == by_idx[1]["translation"])
+    assert styles[by_idx[2]["translation"]] == "sad"
+    assert all(t["instr"]["lang"] == "hi" for t in r.fake.tts_log)
+
+
+def test_custom_voice_replaces_tts_for_that_line_and_is_fitted(run, tmp_path):
+    import numpy as np
+    import soundfile as sf
+    out = tmp_path / "cv"
+    (out / "hi" / "custom").mkdir(parents=True)
+    sf.write(str(out / "hi" / "custom" / "seg1.wav"), (0.3 * np.sin(2 * np.pi * 300 * np.arange(24000 * 2) / 24000)).astype("float32"), 24000)
+    (out / "hi" / "overrides.json").write_text(json.dumps({"1": {"custom_audio": "custom/seg1.wav"}}))
+    r = run(langs=("hi",), out=out)
+    s1 = segs(r.out, "hi")[1]
+    assert s1["custom_voice"] is True and s1["voice"] == "Your voice" and s1["status"] in ("dubbed", "degraded")
+    assert s1["translation"] and "custom_voice" in s1["notes"] and s1["stretch"] <= config.STRETCH_MAX
+    assert s1["translation"] not in [t["text"] for t in r.fake.tts_log]          # Indic-Speak was not asked to voice it
+    assert (r.out / "work" / "hi" / "seg1.wav").exists() and r.rc == 0

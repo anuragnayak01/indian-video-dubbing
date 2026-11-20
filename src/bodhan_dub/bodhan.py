@@ -1,7 +1,7 @@
 """Client for the three Bodhan models used by the pipeline. Every ASR, MT and TTS call goes through here.
 
 - Indic-Transcribe: POST /v1/audio/transcriptions   (multipart, <=30 s of audio, returns {"text"})
-- Indic-Translate:  POST /v1/chat/completions       (OpenAI-compatible; dedicated /translate is currently 404)
+- Indic-Translate:  POST /translate (documented) with POST /v1/chat/completions as the fallback on 404
 - Indic-Speak:      POST /v1/audio/speech           (JSON, returns PCM16 24 kHz mono WAV)
 
 Retries with exponential backoff on 429/5xx, a global concurrency limit, an on-disk cache so
@@ -34,7 +34,8 @@ def hint(status: int | None, model: str) -> str:
         return (f" | Hint: route not found for this key. Most often the key was not created for {model} "
                 "(each Bodhan key serves one model), or BODHAN_BASE_URL is wrong.")
     if status == 429:
-        return " | Hint: rate limited or out of credit. Check your balance in the Bodhan console, lower concurrency and wait."
+        return (" | Hint: Bodhan is limiting requests for this key (the text before this hint is Bodhan's own reply). If your balance is "
+                "fine, the key is being rate limited: set DUB_CONCURRENCY=1 on Render and rerun. The app also slows itself after a 429.")
     return ""
 
 
@@ -67,6 +68,10 @@ class BodhanClient:
         self.meter = meter or Meter()
         self.base = (base_url or config.BASE_URL).rstrip("/")
         self.max_attempts, self.backoff = max_attempts, backoff
+        # Pacing: minimum seconds between request starts per model. Starts at BODHAN_MIN_INTERVAL (default 0) and
+        # doubles after each 429 (up to 15 s), shared by every thread, then relaxes after successes.
+        self.base_pace = float(os.environ.get("BODHAN_MIN_INTERVAL", "0") or 0)
+        self.pace, self.next_at, self.plock = {}, {}, threading.Lock()
         self.http = http or httpx.Client(timeout=httpx.Timeout(120, connect=15))
         if cache_dir:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -93,22 +98,57 @@ class BodhanClient:
             (self.cache_dir / f"{key}.{ext}").write_bytes(data)
 
     # ---- http with retries ----
+    def _pace_wait(self, model: str):
+        iv = self.pace.get(model, self.base_pace)
+        if iv <= 0:
+            return
+        with self.plock:
+            now = time.monotonic()
+            at = max(now, self.next_at.get(model, 0.0))
+            self.next_at[model] = at + iv
+        if at > now:
+            time.sleep(at - now)
+
+    def _slow_down(self, model: str):
+        if self.backoff <= 0:
+            return
+        with self.plock:
+            self.pace[model] = min(15.0, max(self.pace.get(model, self.base_pace) * 2, self.backoff))
+
+    def _relax(self, model: str):
+        with self.plock:
+            cur = self.pace.get(model)
+            if cur:
+                self.pace[model] = cur * 0.8 if cur * 0.8 > max(self.base_pace, 0.2) else self.base_pace
+
     def _request(self, model: str, label: str, fn):
         last = None
-        for attempt in range(1, self.max_attempts + 1):
+        # 429 gets twice as many attempts as other failures: it is the one that clears if we wait.
+        limit = self.max_attempts * 2 if self.max_attempts > 1 else 1
+        for attempt in range(1, limit + 1):
+            if attempt > self.max_attempts and not (last and last.status == 429):
+                break
             t0 = time.time()
             try:
+                self._pace_wait(model)
                 with self.sem:
                     r = fn()
                 self.meter.add(model, calls=1, seconds=time.time() - t0)
                 if r.status_code == 200:
+                    self._relax(model)
                     log("api_call", api=label, status=200, seconds=round(time.time() - t0, 2))
                     return r
                 if r.status_code in (429, 500, 502, 503, 504):
-                    wait = float(r.headers.get("retry-after", 0) or 0) or self.backoff * 2 ** (attempt - 1)
-                    last = BodhanError(f"{label}: HTTP {r.status_code}{hint(r.status_code, 'indic-' + model)}", r.status_code)
+                    wait = min(60.0, float(r.headers.get("retry-after", 0) or 0) or min(30.0, self.backoff * 2 ** (attempt - 1)))
+                    body = r.text[:200].replace("\n", " ")
+                    detail = f": {body}" if body and r.status_code == 429 else ""
+                    last = BodhanError(f"{label}: HTTP {r.status_code}{detail}{hint(r.status_code, 'indic-' + model)}", r.status_code)
                     self.meter.add(model, retries=1)
-                    log("api_retry", api=label, status=r.status_code, attempt=attempt, wait=round(wait, 1))
+                    if r.status_code == 429:
+                        self._slow_down(model)
+                    log("api_retry", api=label, status=r.status_code, attempt=attempt, wait=round(wait, 1), body=body,
+                        retry_after=r.headers.get("retry-after", ""), ratelimit=r.headers.get("x-ratelimit-remaining", ""),
+                        request_id=r.headers.get("x-request-id", ""))
                     time.sleep(wait)
                     continue
                 code = None
@@ -122,7 +162,7 @@ class BodhanClient:
                 last = BodhanError(f"{label}: {type(e).__name__}")
                 self.meter.add(model, retries=1)
                 log("api_retry", api=label, error=type(e).__name__, attempt=attempt)
-                time.sleep(self.backoff * 2 ** (attempt - 1))
+                time.sleep(min(30.0, self.backoff * 2 ** (attempt - 1)))
         raise last or BodhanError(f"{label}: failed")
 
     def _auth(self, key: str) -> dict:
@@ -146,50 +186,57 @@ class BodhanClient:
         return text
 
     # ---- Indic-Translate ----
-    # The dedicated POST /translate endpoint advertised in the docs currently returns 404.
-    # The live path is the OpenAI-compatible chat completions endpoint.
+    # Documented route first (POST /translate). The OpenAI-compatible POST /v1/chat/completions is the second route, used
+    # if /translate answers 404 for this key. Whichever works is remembered for the rest of the run.
+    TRANSLATE_ROUTES = ("/translate", "/v1/chat/completions")
+
+    @staticmethod
+    def _translate_body(path: str, text: str, lang: str, script: str) -> dict:
+        if path.endswith("/chat/completions"):
+            body = {"model": "indic-translate", "messages": [{"role": "user", "content": text}], "target_language_code": lang}
+            if script != "native":
+                body["target_script"] = script
+            return body
+        body = {"text": text, "target_language": lang}
+        if script != "native":
+            body["script"] = script
+        return body
+
+    def _post_translate(self, text: str, lang: str, script: str):
+        paths = [os.environ["BODHAN_TRANSLATE_PATH"]] if os.environ.get("BODHAN_TRANSLATE_PATH") else list(self.TRANSLATE_ROUTES)
+        start = getattr(self, "_tpath", None)
+        if start in paths:
+            paths.remove(start)
+            paths.insert(0, start)
+        err = None
+        for path in paths:
+            body = self._translate_body(path, text, lang, script)
+            try:
+                r = self._request("translate", "translate", lambda path=path, body=body: self.http.post(
+                    f"{self.base}{path}", headers=self._auth(self.keys.translate), json=body))
+                self._tpath = path
+                return r
+            except BodhanError as e:
+                if e.status != 404:
+                    raise
+                log("translate_path_not_found", path=path, detail=str(e)[:200])
+                err = e
+        raise err
+
     def translate(self, text: str, lang: str, script: str = "native") -> dict:
         key = self._ck("mt", text, lang, script)
         hit = self._cget(key, "json")
         if hit:
             self.meter.add("translate", cache_hits=1)
             return json.loads(hit)
-
-        body = {
-            "model": "indic-translate",
-            "messages": [{"role": "user", "content": text}],
-            "target_language_code": lang,
-        }
-        if script != "native":
-            body["target_script"] = script
-
-        r = self._request(
-            "translate",
-            "translate",
-            lambda: self.http.post(
-                f"{self.base}/v1/chat/completions",
-                headers=self._auth(self.keys.translate),
-                json=body,
-            ),
-        )
-        j = r.json()
-
-        # chat-completions response shape
-        content = ""
-        try:
+        j = self._post_translate(text, lang, script).json()
+        try:   # chat-completions shape, else the /translate shape
             content = (j["choices"][0]["message"]["content"] or "").strip()
         except (KeyError, IndexError, TypeError):
-            # defensive: fall back to older /translate shape if it ever returns
             content = (j.get("translation") or "").strip()
-
-        tokens = (
-            (j.get("usage") or {}).get("completion_tokens")
-            or (j.get("usage") or {}).get("output_tokens")
-            or max(1, len(content) // 2)
-        )
-        truncated = bool(j.get("truncated", False))
-
-        out = {"text": content, "truncated": truncated, "tokens": tokens}
+        use = j.get("usage") or {}
+        tokens = use.get("output_tokens") or use.get("completion_tokens") or max(1, len(content) // 2)
+        out = {"text": content, "truncated": bool(j.get("truncated")), "tokens": tokens}
         self.meter.add("translate", cost_inr=tokens / 10000 * config.PRICE_TRANSLATE_PER_10K_TOKENS)
         if not out["truncated"]:  # never cache a cut-off translation
             self._cput(key, "json", json.dumps(out, ensure_ascii=False).encode())

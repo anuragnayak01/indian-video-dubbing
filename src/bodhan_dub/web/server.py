@@ -5,20 +5,24 @@ import hmac
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 import yaml
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from .. import config, logs, textutil
-from ..bodhan import BodhanClient
+from .. import audio, config, logs, textutil
+from .. import bodhan as bodhan_mod
+from ..bodhan import BodhanClient, BodhanError
 from ..llm import Brain
-from ..pipeline import Options, run_pipeline
+from ..pipeline import Options, run_pipeline, speak_pieces
 
 DATA = Path(os.environ.get("BODHAN_DUB_WEB_DATA", "./webdata")).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
@@ -58,6 +62,8 @@ STARTED = time.time()
 JOB_LOCK = threading.Lock()      # the logger is process-wide, so jobs run one at a time
 JOBS: dict[str, dict] = {}
 OVERRIDE_FIELDS = {"text", "english", "voice", "style", "speed", "max_stretch"}
+STYLE_CHOICES = set(config.STYLES) | {"none"}      # "none" = explicitly neutral, even when the project has a style
+MAX_VOICE_BYTES, MAX_VOICE_SECONDS = 25 << 20, 60.0
 
 
 def pdir(pid: str) -> Path:
@@ -100,12 +106,13 @@ def start_job(pid: str, langs: list[str], merge: bool) -> None:
                     raise RuntimeError("Missing environment variables: " + ", ".join(keys.missing()))
                 out.mkdir(exist_ok=True)
                 logs.setup(log_file, echo=True, tag=pid)
-                client = BodhanClient(keys, out / "work" / "cache", max_concurrency=m.get("concurrency", 4))
+                conc = max(1, int(os.environ.get("DUB_CONCURRENCY") or m.get("concurrency") or 2))   # today's setting, not the one saved with the project
+                client = BodhanClient(keys, out / "work" / "cache", max_concurrency=conc)
                 gl, vo = DATA / pid / "glossary.yaml", DATA / pid / "voices.yaml"
                 opt = Options(input=DATA / pid / m["input"], langs=langs, out=out, glossary=gl if gl.exists() else None,
                               voices=vo if vo.exists() else None, code_mixed=m.get("code_mixed", False),
-                              concurrency=m.get("concurrency", 4), style=m.get("style") or None, merge=merge)
-                logs.log("job_start", langs=",".join(langs), merge=merge, concurrency=m.get("concurrency"), llm=Brain().available)
+                              concurrency=conc, style=m.get("style") or None, merge=merge)
+                logs.log("job_start", langs=",".join(langs), merge=merge, concurrency=conc, llm=Brain().available)
                 rc = run_pipeline(opt, client, Brain())
                 logs.log("job_end", exit_code=rc)
                 job["state"] = "done" if rc == 0 else "finished_with_errors"
@@ -196,10 +203,10 @@ def diagnose(request: Request):
     out: dict = {"base_url": base, "keys": {"transcribe": fp(keys.transcribe), "translate": fp(keys.translate), "speak": fp(keys.speak)},
                  "translate_key_same_as_transcribe": bool(keys.translate) and keys.translate == keys.transcribe,
                  "translate_key_same_as_speak": bool(keys.translate) and keys.translate == keys.speak, "tests": []}
-    for path in ("/translate", "/v1/translate"):
+    for path in bodhan_mod.BodhanClient.TRANSLATE_ROUTES:
         try:
             r = httpx.post(base + path, headers={"Authorization": f"Bearer {keys.translate.strip()}"}, timeout=30,
-                           json={"text": "Hello", "target_language": "hi"})
+                           json=bodhan_mod.BodhanClient._translate_body(path, "Hello", "hi", "native"))
             out["tests"].append({"call": "translate POST " + path, "status": r.status_code, "body": r.text[:300],
                                  "request_id": r.headers.get("x-request-id", "")})
         except Exception as e:
@@ -214,6 +221,22 @@ def diagnose(request: Request):
                                                     "has_request_id": bool(r.headers.get("x-request-id")), "body": r.text[:120]}
         except Exception as e:
             out["translate_with_each_key"][name] = {"error": f"{type(e).__name__}: {e}"[:120]}
+    try:
+        import io
+        import wave
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 16000)
+        r = httpx.post(base + "/v1/audio/transcriptions", headers={"Authorization": f"Bearer {keys.transcribe.strip()}"}, timeout=60,
+                       files={"file": ("probe.wav", buf.getvalue(), "audio/wav")}, data={"model": "indic-transcribe", "language": "en"})
+        out["tests"].append({"call": "transcribe (1 s of silence)", "status": r.status_code, "body": r.text[:300],
+                             "request_id": r.headers.get("x-request-id", ""),
+                             "headers": {k: v for k, v in r.headers.items() if k.lower().startswith(("retry-after", "x-ratelimit"))}})
+    except Exception as e:
+        out["tests"].append({"call": "transcribe", "error": f"{type(e).__name__}: {e}"[:200]})
     try:
         c = BodhanClient(keys, None, max_attempts=1, backoff=0)
         wav = c.speak("नमस्ते", config.DEFAULT_VOICES["male"], "hi")
@@ -299,25 +322,116 @@ def busy(pid: str) -> bool:
     return JOBS.get(pid, {}).get("state") in ("queued", "running")
 
 
+def seg_count(d: Path, lang: str) -> int:
+    f = d / f"segments.{lang}.json"
+    return len(json.loads(f.read_text()).get("segments", [])) if f.exists() else 0
+
+
+def read_ov(f: Path) -> dict:
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
 @app.patch("/api/projects/{pid}/lang/{lang}/segments/{idx}")
 def edit_segment(pid: str, lang: str, idx: int, body: dict = Body(...)):
+    """Merge the fields sent into this line's overrides. Fields not sent are kept; names in "unset" are removed."""
     if busy(pid):
         raise HTTPException(409, "A run is in progress; wait for it to finish")
     d = pdir(pid) / "out" / check_lang(lang)
     clean = {k: v for k, v in body.items() if k in OVERRIDE_FIELDS and v not in (None, "")}
     if "speed" in clean:
         clean["speed"] = min(config.STRETCH_MAX, max(config.STRETCH_MIN, float(clean["speed"])))
-    if "style" in clean and clean["style"] not in config.STYLES:
+    if "style" in clean and clean["style"] not in STYLE_CHOICES:
         raise HTTPException(400, "Unknown style")
+    unset = [k for k in (body.get("unset") or []) if k in OVERRIDE_FIELDS | {"custom_audio"}]
     f = d / "overrides.json"
-    ov = json.loads(f.read_text()) if f.exists() else {}
+    ov = read_ov(f)
     if body.get("reset"):
         ov.pop(str(idx), None)
+        (d / "custom" / f"seg{idx}.wav").unlink(missing_ok=True)
     else:
-        ov[str(idx)] = clean
+        cur = ov.get(str(idx), {})
+        if "english" in clean and "text" not in clean:
+            cur.pop("text", None)             # new English and no hand-typed text: translate again
+        for k in unset:
+            cur.pop(k, None)
+        if "custom_audio" in unset:
+            (d / "custom" / f"seg{idx}.wav").unlink(missing_ok=True)
+        ov[str(idx)] = {**cur, **clean}
     textutil.atomic_write(f, json.dumps(ov, ensure_ascii=False, indent=1))
     start_job(pid, [lang], merge=True)
     return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/lang/{lang}/segments/{idx}/voice")
+async def upload_voice(pid: str, lang: str, idx: int, file: UploadFile = File(...)):
+    """Use the person's own recording for one sentence. Any common audio format; converted to mono 24 kHz WAV."""
+    if busy(pid):
+        raise HTTPException(409, "A run is in progress; wait for it to finish")
+    d = pdir(pid) / "out" / check_lang(lang)
+    if not 0 <= idx < seg_count(d, lang):
+        raise HTTPException(404, "no such sentence")
+    cdir = d / "custom"
+    cdir.mkdir(exist_ok=True)
+    raw, dst = cdir / f"seg{idx}.upload", cdir / f"seg{idx}.wav"
+    size = 0
+    with open(raw, "wb") as fh:
+        while chunk := await file.read(1 << 20):
+            size += len(chunk)
+            if size > MAX_VOICE_BYTES:
+                fh.close()
+                raw.unlink(missing_ok=True)
+                raise HTTPException(413, "Recording is larger than 25 MB")
+            fh.write(chunk)
+    try:
+        tmp = cdir / f"seg{idx}.new.wav"
+        r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), "-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(tmp)],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode or not tmp.exists():
+            raise HTTPException(400, "Could not read that audio file. Use WAV, MP3, M4A, OGG or WebM.")
+        dur = audio.probe_duration(tmp)
+        x, _ = sf.read(str(tmp), dtype="float32")
+        if dur < 0.3 or dur > MAX_VOICE_SECONDS:
+            raise HTTPException(400, f"Recording is {dur:.1f} s; it must be between 0.3 and {MAX_VOICE_SECONDS:.0f} s")
+        if float(np.sqrt(np.mean(x ** 2))) < 0.003:
+            raise HTTPException(400, "The recording is silent. Check the microphone and try again.")
+        tmp.replace(dst)
+    finally:
+        raw.unlink(missing_ok=True)
+        (cdir / f"seg{idx}.new.wav").unlink(missing_ok=True)
+    f = d / "overrides.json"
+    ov = read_ov(f)
+    ov[str(idx)] = {**ov.get(str(idx), {}), "custom_audio": f"custom/seg{idx}.wav"}
+    textutil.atomic_write(f, json.dumps(ov, ensure_ascii=False, indent=1))
+    start_job(pid, [lang], merge=True)
+    return {"ok": True, "seconds": round(dur, 2)}
+
+
+@app.post("/api/projects/{pid}/lang/{lang}/preview")
+def preview_voice(pid: str, lang: str, body: dict = Body(...)):
+    """Hear a line in a chosen voice and style without re-running the video (one cached Indic-Speak call)."""
+    d = pdir(pid)
+    check_lang(lang)
+    text, voice, style = str(body.get("text") or "").strip(), str(body.get("voice") or ""), body.get("style") or None
+    voices = {v for g in config.VOICES.values() for k in g.values() for v in k}
+    if not text or len(text) > 400:
+        raise HTTPException(400, "Text must be 1-400 characters")
+    if voice not in voices:
+        raise HTTPException(400, "Unknown voice")
+    if style in ("none", ""):
+        style = None
+    if style and style not in config.STYLES:
+        raise HTTPException(400, "Unknown style")
+    keys = config.Keys.from_env()
+    if not keys.speak:
+        raise HTTPException(503, "Missing environment variable: BODHAN_SPEAK_KEY")
+    client = BodhanClient(keys, d / "out" / "work" / "cache", max_concurrency=1)
+    try:
+        wav = speak_pieces(client, text, voice, lang, style, 0, 0)
+    except BodhanError as e:
+        logs.log("preview_failed", error=str(e)[:200])
+        raise HTTPException(502, str(e)[:300]) from e
+    logs.log("preview", lang=lang, voice=voice, style=style or "-", chars=len(text))
+    return Response(wav, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
 @app.put("/api/projects/{pid}/glossary")
@@ -356,11 +470,11 @@ def get_file(pid: str, kind: str, lang: str = "", idx: int = -1):
     m = meta(pid)
     paths = {"original": d / m["input"], "report": d / "out" / "report.json", "transcript": d / "out" / "transcript.en.json",
              "log": d / "out" / "run.log.jsonl"}
-    if kind in ("video", "srt", "segments", "clip", "mix"):
+    if kind in ("video", "srt", "segments", "clip", "mix", "custom"):
         check_lang(lang)
         paths.update({"video": d / "out" / lang / f"video.{lang}.mp4", "srt": d / "out" / lang / f"subtitles.{lang}.srt",
                       "segments": d / "out" / lang / f"segments.{lang}.json",
-                      "clip": d / "out" / "work" / lang / f"seg{idx}.wav", "mix": d / "out" / "work" / lang / "mix.wav"})
+                      "clip": d / "out" / "work" / lang / f"seg{idx}.wav", "custom": d / "out" / lang / "custom" / f"seg{idx}.wav", "mix": d / "out" / "work" / lang / "mix.wav"})
     f = paths.get(kind)
     if not f or not f.exists():
         raise HTTPException(404)

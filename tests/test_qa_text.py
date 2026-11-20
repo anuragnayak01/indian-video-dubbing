@@ -78,14 +78,14 @@ def test_translate_falls_back_to_v1_path_on_404():
         seen.append(req.url.path)
         if req.url.path == "/translate":
             return httpx.Response(404, json={"detail": "Not Found"})
-        return httpx.Response(200, json={"translation": "नमस्ते", "truncated": False, "usage": {"completion_tokens": 3}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "नमस्ते"}}], "usage": {"completion_tokens": 3}})
 
     keys = config.Keys("a", "b", "c")
     c = BodhanClient(keys, None, http=httpx.Client(transport=httpx.MockTransport(handler)), backoff=0)
     assert c.translate("hello", "hi")["text"] == "नमस्ते"
-    assert seen == ["/translate", "/v1/translate"]
+    assert seen == ["/translate", "/v1/chat/completions"]
     c.translate("again", "hi")
-    assert seen[-1] == "/v1/translate" and seen.count("/translate") == 1     # remembers the working path
+    assert seen[-1] == "/v1/chat/completions" and seen.count("/translate") == 1     # remembers the working path
 
 
 def test_preflight_fails_fast_with_hint_on_wrong_key():
@@ -105,7 +105,7 @@ def test_preflight_fails_fast_with_hint_on_wrong_key():
     with pytest.raises(BodhanError) as e:
         preflight(c, "hi")
     assert "indic-translate" in str(e.value) and "each Bodhan key serves one model" in str(e.value)
-    assert set(calls) == {"/translate", "/v1/translate"}      # nothing else was called, no transcription spend
+    assert set(calls) == {"/translate", "/v1/chat/completions"}      # nothing else was called, no transcription spend
 
 
 def test_console_log_line_is_readable_and_flags_errors(capsys, tmp_path):
@@ -117,3 +117,24 @@ def test_console_log_line_is_readable_and_flags_errors(capsys, tmp_path):
     assert "ERROR [abc123] api_error api=translate status=404" in out[0]
     assert "INFO  [abc123] stage stage=vad spans=3" in out[1]
     logs.setup(None, echo=False)
+
+
+def test_429_shows_bodhans_own_message_and_paces_after_it():
+    import httpx
+
+    from bodhan_dub.bodhan import BodhanClient, BodhanError
+    from bodhan_dub.config import Keys
+    n = {"c": 0}
+
+    def handler(req):
+        n["c"] += 1
+        return httpx.Response(429, json={"detail": "Too many concurrent requests for this key"}, headers={"retry-after": "0"})
+
+    c = BodhanClient(Keys("t", "m", "s"), None, max_attempts=2, backoff=0.01, http=httpx.Client(transport=httpx.MockTransport(handler)))
+    try:
+        c._request("transcribe", "transcribe", lambda: c.http.post("http://x/v1/audio/transcriptions"))
+        raise AssertionError("should fail")
+    except BodhanError as e:
+        assert e.status == 429 and "Too many concurrent requests" in str(e) and "DUB_CONCURRENCY=1" in str(e)
+    assert n["c"] == 4                                  # 429 gets twice the attempts of other failures
+    assert c.pace["transcribe"] > 0                     # and the client slowed itself down

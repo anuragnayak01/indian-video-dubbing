@@ -38,6 +38,7 @@ class FakeBodhan:
         self.n_source = 0
         self.fail_langs = fail_langs or set()
         self.mt_log: list[str] = []
+        self.tts_log: list[dict] = []     # every speech request body, to check voice/style reach the API
         self.client = httpx.Client(transport=httpx.MockTransport(self.handle), base_url="https://api.bodhan.ai")
 
     def handle(self, req: httpx.Request) -> httpx.Response:
@@ -52,7 +53,9 @@ class FakeBodhan:
                                              "usage": {"output_tokens": max(1, len(body["text"]) // 3)}})
         if path == "/v1/audio/speech":
             self.calls["tts"] += 1
-            text = json.loads(req.content)["input"]
+            body = json.loads(req.content)
+            text = body["input"]
+            self.tts_log.append({"text": text, "voice": body["voice"], "instr": json.loads(body["instructions"])})
             nominal = max(0.4, len(text) / self.cps)
             f = freq_for(text)
             self.table[f] = (text, nominal)

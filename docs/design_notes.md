@@ -87,6 +87,15 @@ flowchart TD
 
 A thin FastAPI app plus one static page. It uploads a file, starts `run_pipeline`, polls `run.log.jsonl` for progress, and serves the segments, report and media the pipeline wrote. Edits are saved as `out/<lang>/overrides.json` (English, target text, voice, style, speed) and the language is re-run; the cache makes this cost only the changed line. Overrides are whitelisted and speed is clamped to 0.85-1.2x on the server.
 
+## Per-sentence voice controls
+
+| Control | Behaviour |
+|---|---|
+| Style / emotion | Sent as `instructions: {"lang", "style"}` to Indic-Speak. `Neutral` is stored as `none` so it can override a project-wide style. The style used is recorded per sentence and shown as a badge. |
+| Edits | An edit is merged into the sentence's existing overrides, so a style-only change keeps hand-typed text and speed. `unset` removes a field; new English without typed text drops the old typed text so it is re-translated. |
+| Hear this voice and style | One cached Indic-Speak call, no pipeline run, for comparing voices and styles. |
+| Use my own voice | Recorded in the browser or uploaded, converted to mono 24 kHz WAV (0.3-60 s, 25 MB, not silent), stored under `out/<lang>/custom/`. The pipeline uses it instead of Indic-Speak for that sentence, with the same fit ladder (speed at most 1.2x), no QA retry loop. Removing it restores the AI voice. |
+
 ## What I would do next
 
 Calibrate QA thresholds on real runs; add source separation to keep music under speech; speaker diarization from an allowed source; Indic-OCR for on-screen text; reading-speed subtitle splitting; per-job isolation and auth for the web studio.

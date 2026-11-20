@@ -56,7 +56,7 @@ python -m bodhan_dub.web --port 8000     # open http://localhost:8000
 
 Upload a video, tick the languages, and watch the progress. Then for each language:
 
-- **Sentences**: every sentence with check badges (sync offset, how the fit was achieved, speed, back-transcription error rate, repeat/omission flags, retries), a play button, and **Why?**, which shows every attempt and what the speech model actually said. **Edit** changes the English (re-translated by Indic-Translate), types your own target text, picks voice and style, and sets speed within 0.85-1.2x. Only that line is re-voiced; the rest comes from cache.
+- **Sentences**: every sentence with check badges (sync offset, how the fit was achieved, speed, back-transcription error rate, repeat/omission flags, retries), a play button, and **Why?**, which shows every attempt and what the speech model actually said. **Edit** changes the English (re-translated by Indic-Translate), types your own target text, picks voice and style, and sets speed within 0.85-1.2x. **Hear this voice and style** plays the line in the chosen voice and style before you commit (one cached Indic-Speak call). **Use my own voice** lets you record in the browser or upload a recording for that one sentence; it replaces the AI voice, is fitted into the time slot (speed never above 1.2x) and is never regenerated. Only that line is re-voiced; the rest comes from cache.
 - **Timeline**: dubbed video with English speech, dub and untouched (non-speech) lanes and live captions.
 - **Glossary & voices**: pin terms per language; choose a voice per speaker.
 - **Report & export**: targets table, misses with reasons, costs, downloads.
@@ -131,7 +131,9 @@ Unit tests cover segmentation, the VAD, timing ladder, QA, glossary, voices and 
 - **Glossary enforcement is partial.** Terms with your own rendering are substituted before translation. Other pinned terms are only checked and flagged (`term_variant`), because only Indic-Translate may write Indian-language text.
 - **Subtitles are one cue per sentence**, wrapped at 42 characters, not split to reading speed.
 - Not implemented: on-screen text translation (Indic-OCR), "my narration" recording.
-- The web studio runs one job at a time and has no authentication; run it locally.
+- The web studio runs one job at a time. Set `DUB_ACCESS_TOKEN` when hosting it; the page shows a sign-in screen first.
+- **Style/emotion strength depends on the model.** The style is sent exactly as documented (`instructions` JSON with `lang` and `style`), but how strongly Indic-Speak applies it varies by voice and sentence. Use the editor's preview to compare.
+- **Own-voice lines are not checked** by the speech model (no back-transcription) and cannot be shortened by the LLM; a recording longer than its slot is sped up to 1.2x at most and then trimmed at the next sentence, and the line is marked degraded.
 
 ## Cost and runtime
 

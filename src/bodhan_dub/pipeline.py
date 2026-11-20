@@ -194,15 +194,29 @@ class LangRun:
         english = ov.get("english") or seg["text"]
         voice = ov.get("voice") or pick_voice(self.voices, self.lang, seg["speaker"], seg["gender"], self.same_gender(seg))
         style = ov.get("style") or self.opt.style
+        if style == "none":                      # the editor's explicit "no style" choice beats the project style
+            style = None
         max_stretch = min(float(ov.get("max_stretch", config.STRETCH_MAX)), config.STRETCH_MAX)
         slot = seg["end"] - seg["start"]
         rec = {"idx": i, "start": seg["start"], "end": seg["end"], "speaker": seg["speaker"], "gender": seg["gender"],
-               "voice": voice, "source_text": seg["text"], "english_used": english, "retries": {"condense": 0, "tts": 0},
+               "voice": voice, "style": style, "source_text": seg["text"], "english_used": english, "retries": {"condense": 0, "tts": 0},
                "notes": [], "status": "failed", "attempts": []}
         clip = self.work / f"seg{i}.wav"
         translation = ov.get("text")
         notes = rec["notes"]
         try:
+            custom = self.dir / ov["custom_audio"] if ov.get("custom_audio") else None
+            if custom is not None and custom.exists():
+                if not translation:          # the text only feeds the subtitles here, so a failed translation must not drop the line
+                    try:
+                        translation, tn = self.translate(english)
+                        notes += tn
+                    except BodhanError as e:
+                        translation = ""
+                        notes.append(f"subtitle_translation_failed:{str(e)[:80]}")
+                else:
+                    notes.append("manual_text")
+                return self.custom_segment(rec, seg, nxt_start, ov, custom, clip, translation), clip
             if translation:
                 notes.append("manual_text")
             else:
@@ -268,6 +282,36 @@ class LangRun:
             rec["translation"] = translation or ""
             log("segment_failed", lang=self.lang, idx=i, error=rec["error"])
             return rec, None
+
+    def custom_segment(self, rec: dict, seg: dict, nxt_start: float, ov: dict, src: Path, clip: Path, translation: str) -> dict:
+        """The person's own recording replaces Indic-Speak for this line. It is placed and fitted like any dub
+        (same ladder, speed never above the cap) but is never regenerated, so there is no QA retry loop."""
+        raw = src.read_bytes()
+        d = audio.wav_duration(raw)
+        slot = seg["end"] - seg["start"]
+        plan = timing.plan_fit(d, slot, seg["gap_after"], seg["gap_before"], min(float(ov.get("max_stretch", config.STRETCH_MAX)), config.STRETCH_MAX))
+        if ov.get("speed"):
+            sp = min(config.STRETCH_MAX, max(config.STRETCH_MIN, float(ov["speed"])))
+            plan = timing.FitPlan("manual_speed", sp, 0.0, 0.0)
+        dur = audio.fit_clip(raw, plan.stretch, clip)
+        start = seg["start"] + plan.start_shift
+        max_end = round(nxt_start - 0.03, 3)
+        rec["voice"], rec["custom_voice"] = "Your voice", True
+        rec["notes"].append("custom_voice")
+        rec["attempts"].append({"cond": 0, "tts": 0, "raw_s": round(d, 2), "action": plan.action, "stretch": round(plan.stretch, 3),
+                                "cer": 0.0, "flags": ["custom_voice"]})
+        log("segment_custom_voice", lang=self.lang, idx=rec["idx"], raw_s=round(d, 2), action=plan.action)
+        overrun = start + dur - max_end
+        if overrun > 0.05:
+            rec["notes"].append(f"trimmed_overrun:{overrun:.2f}s")
+        rec.update(translation=translation, audio_duration=round(dur, 3), action=plan.action, stretch=round(plan.stretch, 3),
+                   placed_start=round(start, 3), sync_offset_ms=round((start - seg["start"]) * 1000),
+                   back_transcript="(your own recording; not checked by the speech model)",
+                   qa={"ok": True, "cer": 0.0, "flags": ["custom_voice"]}, max_end=max_end,
+                   status="degraded" if plan.action == "condense" else "dubbed")
+        if plan.action == "condense":
+            rec["notes"].append("recording_longer_than_slot_at_max_speed")
+        return rec
 
     # ---- whole language
     def run(self) -> dict:

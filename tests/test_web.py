@@ -105,7 +105,8 @@ def test_diagnose_reports_keys_and_statuses(client, monkeypatch):
     monkeypatch.setattr(server, "BodhanClient", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("speak: HTTP 404")))
     j = client.post("/api/diagnose").json()
     assert j["translate_key_same_as_transcribe"] is True and j["keys"]["translate"]["last4"] == "1234"
-    assert [t["status"] for t in j["tests"][:2]] == [404, 404] and "error" in j["tests"][2]
+    assert [t["status"] for t in j["tests"][:3]] == [404, 404, 404] and "error" in j["tests"][3]
+    assert j["tests"][2]["call"].startswith("transcribe")
 
 
 def test_diagnose_get_needs_query_token_and_post_needs_header(tmp_path, monkeypatch):
@@ -125,3 +126,92 @@ def test_diagnose_get_needs_query_token_and_post_needs_header(tmp_path, monkeypa
     finally:
         monkeypatch.delenv("DUB_ACCESS_TOKEN")
         importlib.reload(server)
+
+
+def _tone_bytes(seconds=2.0, amp=0.3, sr=24000):
+    import io
+
+    import numpy as np
+    import soundfile as sf
+    buf = io.BytesIO()
+    sf.write(buf, (amp * np.sin(2 * np.pi * 300 * np.arange(int(sr * seconds)) / sr)).astype("float32"), sr, format="WAV")
+    return buf.getvalue()
+
+
+def test_edits_merge_and_unset_and_neutral_style(client, video):
+    c, _ = client
+    with open(video, "rb") as f:
+        pid = c.post("/api/projects", files={"file": ("a.mp4", f)}, data={"langs": "hi", "style": "anger"}).json()["id"]
+    wait(c, pid)
+    ep = f"/api/projects/{pid}/lang/hi/segments/1"
+    assert c.patch(ep, json={"text": "मेरा पाठ", "speed": 1.1}).status_code == 200
+    wait(c, pid)
+    assert c.patch(ep, json={"style": "sad"}).status_code == 200        # style-only edit must not lose the hand-typed text
+    wait(c, pid)
+    d = c.get(f"/api/projects/{pid}/lang/hi").json()
+    assert d["overrides"]["1"] == {"text": "मेरा पाठ", "speed": 1.1, "style": "sad"}
+    assert d["segments"][1]["style"] == "sad" and d["segments"][1]["translation"] == "मेरा पाठ"
+    assert c.patch(ep, json={"style": "none", "unset": ["speed"]}).status_code == 200
+    wait(c, pid)
+    d = c.get(f"/api/projects/{pid}/lang/hi").json()
+    assert d["overrides"]["1"] == {"text": "मेरा पाठ", "style": "none"} and d["segments"][1]["style"] is None
+    assert c.patch(ep, json={"english": "New English line."}).status_code == 200   # new English and no typed text: translate again
+    wait(c, pid)
+    d = c.get(f"/api/projects/{pid}/lang/hi").json()
+    assert "text" not in d["overrides"]["1"] and "New English line." in d["segments"][1]["translation"]
+    assert c.patch(ep, json={"style": "shouting"}).status_code == 400
+
+
+def test_own_voice_upload_use_and_remove(client, video):
+    c, _ = client
+    with open(video, "rb") as f:
+        pid = c.post("/api/projects", files={"file": ("a.mp4", f)}, data={"langs": "hi"}).json()["id"]
+    wait(c, pid)
+    up = f"/api/projects/{pid}/lang/hi/segments/1/voice"
+    assert c.post(up, files={"file": ("x.wav", b"not audio")}).status_code == 400
+    assert c.post(up, files={"file": ("s.wav", _tone_bytes(amp=0.0))}).status_code == 400          # silent
+    assert c.post(up, files={"file": ("l.wav", _tone_bytes(seconds=61))}).status_code == 400       # too long
+    assert c.post(f"/api/projects/{pid}/lang/hi/segments/99/voice", files={"file": ("a.wav", _tone_bytes())}).status_code == 404
+    r = c.post(up, files={"file": ("mine.wav", _tone_bytes())})
+    assert r.status_code == 200 and abs(r.json()["seconds"] - 2.0) < 0.1
+    wait(c, pid)
+    d = c.get(f"/api/projects/{pid}/lang/hi").json()
+    s1 = d["segments"][1]
+    assert d["overrides"]["1"]["custom_audio"] == "custom/seg1.wav" and s1["custom_voice"] and s1["voice"] == "Your voice"
+    assert c.get(f"/api/projects/{pid}/file/custom", params={"lang": "hi", "idx": 1}).status_code == 200
+    assert c.patch(f"/api/projects/{pid}/lang/hi/segments/1", json={"style": "happy"}).status_code == 200   # other edits keep the recording
+    wait(c, pid)
+    assert c.get(f"/api/projects/{pid}/lang/hi").json()["segments"][1]["custom_voice"] is True
+    assert c.patch(f"/api/projects/{pid}/lang/hi/segments/1", json={"unset": ["custom_audio"]}).status_code == 200
+    wait(c, pid)
+    d = c.get(f"/api/projects/{pid}/lang/hi").json()
+    assert not d["segments"][1].get("custom_voice") and d["segments"][1]["voice"] != "Your voice"
+    assert c.get(f"/api/projects/{pid}/file/custom", params={"lang": "hi", "idx": 1}).status_code == 404
+
+
+def test_preview_voice_and_style(client, video):
+    c, _ = client
+    with open(video, "rb") as f:
+        pid = c.post("/api/projects", files={"file": ("a.mp4", f)}, data={"langs": "hi"}).json()["id"]
+    wait(c, pid)
+    p = f"/api/projects/{pid}/lang/hi/preview"
+    r = c.post(p, json={"text": "नमस्ते दोस्तों", "voice": "Kavya", "style": "anger"})
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and r.content[:4] == b"RIFF"
+    assert c.post(p, json={"text": "x", "voice": "Nobody"}).status_code == 400
+    assert c.post(p, json={"text": "x", "voice": "Kavya", "style": "yelling"}).status_code == 400
+    assert c.post(p, json={"text": "", "voice": "Kavya"}).status_code == 400
+
+
+def test_job_uses_todays_concurrency_not_the_one_saved_with_the_project(client, video, monkeypatch):
+    c, server = client
+    seen = []
+    real = server.BodhanClient
+    monkeypatch.setattr(server, "BodhanClient", lambda keys, cache, max_concurrency=4, **k: (seen.append(max_concurrency), real(keys, cache, max_concurrency=max_concurrency, **k))[1])
+    monkeypatch.setenv("DUB_CONCURRENCY", "4")
+    with open(video, "rb") as f:
+        pid = c.post("/api/projects", files={"file": ("a.mp4", f)}, data={"langs": "hi"}).json()["id"]
+    wait(c, pid)
+    monkeypatch.setenv("DUB_CONCURRENCY", "1")          # lowered on Render after the project was made
+    assert c.post(f"/api/projects/{pid}/rerun").status_code == 200
+    wait(c, pid)
+    assert seen[0] == 4 and seen[-1] == 1
