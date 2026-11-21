@@ -18,6 +18,8 @@ NO_CODEMIX = {"en"}
 PRICE_TRANSCRIBE_PER_MIN = 0.10
 PRICE_TRANSLATE_PER_10K_TOKENS = 0.20
 PRICE_SPEAK_PER_10K_CHARS = 6.0
+# Indic-OCR pricing is not published in the docs; set BODHAN_OCR_PRICE_PER_IMAGE (INR) to have it counted in the report.
+PRICE_OCR_PER_IMAGE = float(os.environ.get("BODHAN_OCR_PRICE_PER_IMAGE", "0") or 0)
 
 # Targets from the assignment.
 SYNC_TOL_S = 0.300
@@ -55,6 +57,7 @@ class Keys:
     transcribe: str
     translate: str
     speak: str
+    ocr: str = ""        # optional: only needed with --ocr (on-screen text)
 
     @classmethod
     def from_env(cls) -> "Keys":
@@ -63,6 +66,7 @@ class Keys:
             transcribe=os.environ.get("BODHAN_TRANSCRIBE_KEY", shared),
             translate=os.environ.get("BODHAN_TRANSLATE_KEY", shared),
             speak=os.environ.get("BODHAN_SPEAK_KEY", shared),
+            ocr=os.environ.get("BODHAN_OCR_KEY", shared),
         )
 
     def missing(self) -> list[str]:

@@ -25,6 +25,13 @@ def video30(tmp_path_factory):
     return make_video(tmp_path_factory.mktemp("media30") / "clip30.mp4", bursts=((1, 5), (7, 13), (15, 19), (22, 28)), duration=30.0)
 
 
+@pytest.fixture(scope="session")
+def video_text(tmp_path_factory):
+    """Dark 640x360 video: 'Revenue grew' on the left from 4 s to 9 s, 'Open source' on the right 10 s to 14 s."""
+    return make_video(tmp_path_factory.mktemp("mediat") / "txt.mp4", duration=18.0,
+                      texts=(("Revenue grew", 40, 150, 4, 9), ("Open source", 360, 250, 10, 14)))
+
+
 class FakeLLM:
     """Stands in for an OpenAI-compatible endpoint. It only ever sees and returns English."""
 
@@ -48,14 +55,14 @@ class FakeLLM:
 
 @pytest.fixture
 def run(tmp_path, video, video30):
-    def _run(langs=("hi", "ta"), fake=None, llm=None, out=None, clip30=False, **kw):
+    def _run(langs=("hi", "ta"), fake=None, llm=None, out=None, clip30=False, src=None, ocr_key="", **kw):
         fake = fake or FakeBodhan()
         out = out or tmp_path / "out"
         out.mkdir(exist_ok=True)
         logs.setup(out / "run.log.jsonl", echo=False)
-        client = BodhanClient(config.Keys("a", "b", "c"), out / "work" / "cache", max_concurrency=1, http=fake.client,
+        client = BodhanClient(config.Keys("a", "b", "c", ocr_key), out / "work" / "cache", max_concurrency=1, http=fake.client,
                               base_url="https://api.bodhan.ai", backoff=0.01)
-        opt = Options(input=video30 if clip30 else video, langs=list(langs), out=out, concurrency=1, **kw)
+        opt = Options(input=src or (video30 if clip30 else video), langs=list(langs), out=out, concurrency=1, **kw)
         rc = run_pipeline(opt, client, Brain(client=llm, model="fake"))
         report = json.loads((out / "report.json").read_text())
         return SimpleNamespace(rc=rc, out=out, fake=fake, report=report)

@@ -87,6 +87,18 @@ flowchart TD
 
 A thin FastAPI app plus one static page. It uploads a file, starts `run_pipeline`, polls `run.log.jsonl` for progress, and serves the segments, report and media the pipeline wrote. Edits are saved as `out/<lang>/overrides.json` (English, target text, voice, style, speed) and the language is re-run; the cache makes this cost only the changed line. Overrides are whitelisted and speed is clamped to 0.85-1.2x on the server.
 
+## On-screen text (Indic-OCR)
+
+| Question | Decision |
+|---|---|
+| Which frames? | One per interval (default 2 s, at most 40), taken mid-interval. A frame within 8 of 256 average-hash bits of the previous one reuses its result, so static slides cost one call. Identical images are also answered by the on-disk cache. |
+| Which text? | Blocks with real text and confidence of at least 0.4. Skipped and counted: footers and page numbers, pictures and logos, formulas, tables, text already in an Indian script, fewer than two letters, longer than 400 characters. |
+| How long is it shown? | The same text (similarity 0.85 or more, box overlap 0.3 or more) on consecutive frames is one item: start is the beginning of its first interval, end the end of its last. At most 40 items per video; the longest-lived and largest are kept. |
+| Who writes the Indian-language text? | Only Indic-Translate (glossary substitution and number checks apply). The LLM is not involved. A hand-typed text from the editor wins. |
+| How is it drawn? | A PNG per item: a box in the median colour of the original text box, the translation in a script-matched Noto font through Raqm (correct conjuncts), size from the box area and character count, shrunk before the box grows, kept inside the frame. ffmpeg overlays each PNG with `enable='between(t,start,end)'`. |
+| Failure | No key, an API error on every frame, or an ffmpeg overlay error never fails the dub: it is logged, listed in `report.json` and the video is muxed without overlays. One failing frame or text is skipped. |
+| Resumable | `work/onscreen.json` is keyed by video hash, interval and frame limit; edits in the web studio change only overrides (`o<id>` keys), so a rerun reuses everything. |
+
 ## Per-sentence voice controls
 
 | Control | Behaviour |

@@ -12,6 +12,7 @@ services:
       - { key: BODHAN_TRANSCRIBE_KEY, sync: false }
       - { key: BODHAN_TRANSLATE_KEY, sync: false }
       - { key: BODHAN_SPEAK_KEY, sync: false }
+      - { key: BODHAN_OCR_KEY, sync: false }      # optional: on-screen text (Indic-OCR)
       - { key: LLM_BASE_URL, sync: false }
       - { key: LLM_MODEL, sync: false }
       - { key: LLM_API_KEY, sync: false }

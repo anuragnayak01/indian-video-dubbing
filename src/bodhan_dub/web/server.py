@@ -111,7 +111,7 @@ def start_job(pid: str, langs: list[str], merge: bool) -> None:
                 gl, vo = DATA / pid / "glossary.yaml", DATA / pid / "voices.yaml"
                 opt = Options(input=DATA / pid / m["input"], langs=langs, out=out, glossary=gl if gl.exists() else None,
                               voices=vo if vo.exists() else None, code_mixed=m.get("code_mixed", False),
-                              concurrency=conc, style=m.get("style") or None, merge=merge)
+                              concurrency=conc, style=m.get("style") or None, merge=merge, ocr=bool(m.get("ocr")))
                 logs.log("job_start", langs=",".join(langs), merge=merge, concurrency=conc, llm=Brain().available)
                 rc = run_pipeline(opt, client, Brain())
                 logs.log("job_end", exit_code=rc)
@@ -200,7 +200,7 @@ def diagnose(request: Request):
     def fp(k: str) -> dict:
         return {"set": bool(k), "length": len(k), "last4": k[-4:] if k else "", "has_whitespace": k != k.strip() or " " in k}
 
-    out: dict = {"base_url": base, "keys": {"transcribe": fp(keys.transcribe), "translate": fp(keys.translate), "speak": fp(keys.speak)},
+    out: dict = {"base_url": base, "ocr_key_set": bool(keys.ocr), "keys": {"transcribe": fp(keys.transcribe), "translate": fp(keys.translate), "speak": fp(keys.speak)},
                  "translate_key_same_as_transcribe": bool(keys.translate) and keys.translate == keys.transcribe,
                  "translate_key_same_as_speak": bool(keys.translate) and keys.translate == keys.speak, "tests": []}
     for path in bodhan_mod.BodhanClient.TRANSLATE_ROUTES:
@@ -237,6 +237,22 @@ def diagnose(request: Request):
                              "headers": {k: v for k, v in r.headers.items() if k.lower().startswith(("retry-after", "x-ratelimit"))}})
     except Exception as e:
         out["tests"].append({"call": "transcribe", "error": f"{type(e).__name__}: {e}"[:200]})
+    if keys.ocr:
+        try:
+            import base64
+            import io as _io
+
+            from PIL import Image
+            im = Image.new("RGB", (96, 48), "white")
+            b = _io.BytesIO()
+            im.save(b, format="PNG")
+            r = httpx.post(base + "/v1/chat/completions", headers={"Authorization": f"Bearer {keys.ocr.strip()}"}, timeout=90,
+                           json={"model": "indic-ocr", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {
+                               "url": "data:image/png;base64," + base64.b64encode(b.getvalue()).decode()}}]}]})
+            out["tests"].append({"call": "ocr (blank image)", "status": r.status_code, "body": r.text[:200],
+                                 "request_id": r.headers.get("x-request-id", "")})
+        except Exception as e:
+            out["tests"].append({"call": "ocr", "error": f"{type(e).__name__}: {e}"[:200]})
     try:
         c = BodhanClient(keys, None, max_attempts=1, backoff=0)
         wav = c.speak("नमस्ते", config.DEFAULT_VOICES["male"], "hi")
@@ -250,7 +266,7 @@ def diagnose(request: Request):
 def get_config():
     keys = config.Keys.from_env()
     return {"languages": [{"code": k, "label": v} for k, v in config.LANGUAGES.items()], "voices": config.VOICES,
-            "styles": config.STYLES, "missing_keys": keys.missing(), "llm": Brain().available,
+            "styles": config.STYLES, "missing_keys": keys.missing(), "ocr_key": bool(keys.ocr), "llm": Brain().available,
             "stretch": [config.STRETCH_MIN, config.STRETCH_MAX], "default_langs": ["hi", "ta", "bn"]}
 
 
@@ -266,7 +282,7 @@ def list_projects():
 
 @app.post("/api/projects")
 async def create_project(file: UploadFile = File(...), langs: str = Form("hi,ta,bn"), name: str = Form(""),
-                         code_mixed: bool = Form(False), style: str = Form("")):
+                         code_mixed: bool = Form(False), style: str = Form(""), ocr: bool = Form(False)):
     lang_list = [x for x in (s.strip().lower() for s in langs.split(",")) if x]
     bad = [x for x in lang_list if x not in config.LANGUAGES]
     if not lang_list or bad:
@@ -283,7 +299,7 @@ async def create_project(file: UploadFile = File(...), langs: str = Form("hi,ta,
         while chunk := await file.read(1 << 20):
             fh.write(chunk)
     m = {"name": name or Path(file.filename or "video").stem, "input": f"input{ext}", "langs": lang_list, "code_mixed": code_mixed,
-         "style": style, "created": time.time(), "concurrency": int(os.environ.get("DUB_CONCURRENCY", "2"))}
+         "style": style, "ocr": ocr, "created": time.time(), "concurrency": int(os.environ.get("DUB_CONCURRENCY", "2"))}
     save_meta(pid, m)
     start_job(pid, lang_list, merge=False)
     return {"id": pid, **m}
@@ -315,7 +331,9 @@ def get_lang(pid: str, lang: str):
     if not f.exists():
         raise HTTPException(404, "not ready")
     ov = pdir(pid) / "out" / lang / "overrides.json"
-    return {**json.loads(f.read_text()), "overrides": json.loads(ov.read_text()) if ov.exists() else {}}
+    on = pdir(pid) / "out" / lang / f"onscreen.{lang}.json"
+    return {**json.loads(f.read_text()), "overrides": json.loads(ov.read_text()) if ov.exists() else {},
+            "onscreen": json.loads(on.read_text()) if on.exists() else None}
 
 
 def busy(pid: str) -> bool:
@@ -358,6 +376,33 @@ def edit_segment(pid: str, lang: str, idx: int, body: dict = Body(...)):
             (d / "custom" / f"seg{idx}.wav").unlink(missing_ok=True)
         ov[str(idx)] = {**cur, **clean}
     textutil.atomic_write(f, json.dumps(ov, ensure_ascii=False, indent=1))
+    start_job(pid, [lang], merge=True)
+    return {"ok": True}
+
+
+@app.patch("/api/projects/{pid}/lang/{lang}/onscreen/{oid}")
+def edit_onscreen(pid: str, lang: str, oid: int, body: dict = Body(...)):
+    """Fix, hide or restore one translated on-screen text. Stored as overrides key "o<id>"; the language re-runs from cache."""
+    if busy(pid):
+        raise HTTPException(409, "A run is in progress; wait for it to finish")
+    d = pdir(pid) / "out" / check_lang(lang)
+    f = d / f"onscreen.{lang}.json"
+    if not f.exists() or not any(i["id"] == oid for i in json.loads(f.read_text()).get("items", [])):
+        raise HTTPException(404, "no such on-screen text")
+    ov = read_ov(d / "overrides.json")
+    if body.get("reset"):
+        ov.pop(f"o{oid}", None)
+    else:
+        cur = ov.get(f"o{oid}", {})
+        text = str(body.get("text") or "").strip()
+        if text:
+            cur["text"] = text[:500]
+        if "hide" in body:
+            cur["hide"] = bool(body["hide"])
+            if not cur["hide"]:
+                cur.pop("hide")
+        ov[f"o{oid}"] = cur
+    textutil.atomic_write(d / "overrides.json", json.dumps(ov, ensure_ascii=False, indent=1))
     start_job(pid, [lang], merge=True)
     return {"ok": True}
 

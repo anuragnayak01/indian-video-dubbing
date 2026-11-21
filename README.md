@@ -1,6 +1,6 @@
 # Video dubbing: English video to Indian languages
 
-Dubs one English video into any number of Indian languages and writes, per language, an **AI-dubbed** MP4 with synced speech, an SRT file and a per-sentence JSON, plus the English transcript and a machine-readable `report.json`. Every speech-to-text, translation and speech call goes to a Bodhan model (Indic-Transcribe, Indic-Translate, Indic-Speak). An optional OpenAI-compatible LLM judges and edits **English only**. A Vani-style web studio sits on top of the same pipeline so a person can review and fix any sentence.
+Dubs one English video into any number of Indian languages and writes, per language, an **AI-dubbed** MP4 with synced speech, an SRT file and a per-sentence JSON, plus the English transcript and a machine-readable `report.json`. Every speech-to-text, translation, speech and text-in-image call goes to a Bodhan model (Indic-Transcribe, Indic-Translate, Indic-Speak, Indic-OCR). An optional OpenAI-compatible LLM judges and edits **English only**. A Vani-style web studio sits on top of the same pipeline so a person can review and fix any sentence.
 
 > The output is AI-generated speech from a fixed voice library. It does not clone or imitate the original speaker.
 
@@ -16,6 +16,7 @@ cp .env.example .env        # then fill in the keys
 | Variable | Purpose |
 |---|---|
 | `BODHAN_TRANSCRIBE_KEY`, `BODHAN_TRANSLATE_KEY`, `BODHAN_SPEAK_KEY` | one key per Bodhan model (or a single `BODHAN_API_KEY` for all three) |
+| `BODHAN_OCR_KEY` | optional: Indic-OCR key, only for `--ocr` (on-screen text) |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | any OpenAI-compatible endpoint. Optional: without it every LLM decision has a deterministic fallback |
 
 ## Run
@@ -25,7 +26,7 @@ python -m bodhan_dub \
   --input path/to/video.mp4 \
   --langs hi,ta,bn \
   --out ./out \
-  [--glossary glossary.yaml] [--voices voices.yaml] [--code-mixed] [--style "educational lecture"]
+  [--glossary glossary.yaml] [--voices voices.yaml] [--code-mixed] [--ocr] [--style "educational lecture"]
 ```
 
 `--langs` accepts any Indic-Speak language code: `hi bn ta te mr gu kn ml pa or as ur ne sa sd ks kok mai doi mni brx sat`. Exit code is non-zero if any language failed; partial outputs and the report are still written. Re-running the same command is nearly free: every Bodhan call is cached on disk under `out/work/cache`.
@@ -35,7 +36,7 @@ out/
   report.json              per-language status, timings, retries, QA, cost, targets missed and why
   transcript.en.json       English sentences with start/end, speaker, glossary
   run.log.jsonl            structured log: one record per stage, per segment attempt, per API retry
-  hi/ video.hi.mp4  subtitles.hi.srt  segments.hi.json
+  hi/ video.hi.mp4  subtitles.hi.srt  segments.hi.json  onscreen.hi.json (with --ocr)
   ta/ ...
 ```
 
@@ -47,6 +48,10 @@ terms:
     translations: {hi: "पाइथागोरस प्रमेय"}     # your own rendering is substituted before translation
 speakers: {S1: Kavya, S2: Amit}                  # or per language: languages: {ta: {female: Anitha}}
 ```
+
+### On-screen text (`--ocr`)
+
+Slides, captions and lower thirds are translated too, and drawn over the original text in each dubbed video. Frames are sampled every `--ocr-interval` seconds (default 2, at most `--ocr-max-frames` 40). A frame that looks like the previous one is not sent again, so a static slide costs one Indic-OCR call. Indic-OCR returns reading-ordered blocks with boxes; page furniture, pictures, formulas, tables, text that is already in an Indian script and low-confidence blocks are skipped and counted in `report.json`. The same text on consecutive frames is tracked as one item with a start and end, translated once per language by Indic-Translate (your glossary applies), and shown for exactly that time. The overlay is a box in the original background colour that covers the original text, with the translation in a Noto font for the script (shaped with Raqm so conjuncts render correctly), sized from the original text and shrunk before the box grows. If OCR is unavailable or an overlay fails, the dub is still produced without it. Drawing on the video means this one stage re-encodes the picture (x264, CRF 20).
 
 ### Web studio
 
@@ -113,11 +118,12 @@ Grouping sentences, extracting a glossary, shortening an over-long English sente
 | Indic-Transcribe | hosted | English source (`language=en`) and back-transcription of the dub (`language=<target>`) |
 | Indic-Translate | hosted | every translation, including glossary terms; `script=codemix` with `--code-mixed` |
 | Indic-Speak | hosted | all speech; the language's own recorded voices; optional `style` |
+| Indic-OCR | hosted | text in sampled video frames (`--ocr`): `/v1/chat/completions`, image as a data URI, blocks with boxes |
 
 ## Tests
 
 ```bash
-make check      # ruff + 41 tests
+make check      # ruff + the full test suite
 ```
 
 Unit tests cover segmentation, the VAD, timing ladder, QA, glossary, voices and the LLM guardrails. Integration tests, including the 30-second smoke test, run the whole pipeline against an in-process **fake** Bodhan API (`tests/fake_bodhan.py`) with injected faults: repeated speech, truncated speech, a failing language, over-long lines, non-speech stretches, cache reuse and manual overrides. The fake is a test double only; the pipeline never falls back to it.
@@ -130,9 +136,10 @@ Unit tests cover segmentation, the VAD, timing ladder, QA, glossary, voices and 
 - **Loud music with no gaps** can defeat the energy detector. Flat-energy and implausible-transcript guards reduce, but do not eliminate, narration over music.
 - **Glossary enforcement is partial.** Terms with your own rendering are substituted before translation. Other pinned terms are only checked and flagged (`term_variant`), because only Indic-Translate may write Indian-language text.
 - **Subtitles are one cue per sentence**, wrapped at 42 characters, not split to reading speed.
-- Not implemented: on-screen text translation (Indic-OCR), "my narration" recording.
+- Not implemented: "my narration" recording as a whole-video mode (per-sentence own voice exists).
 - The web studio runs one job at a time. Set `DUB_ACCESS_TOKEN` when hosting it; the page shows a sign-in screen first.
 - **Style/emotion strength depends on the model.** The style is sent exactly as documented (`instructions` JSON with `lang` and `style`), but how strongly Indic-Speak applies it varies by voice and sentence. Use the editor's preview to compare.
+- **On-screen text is approximate in time and in look.** Frames are sampled, so a text starts and ends to the nearest interval, and a fast animation or text over a busy photo can be missed or boxed with a flat colour. Tables are not translated. Needs `BODHAN_OCR_KEY`; Indic-OCR pricing is not in the docs, so set `BODHAN_OCR_PRICE_PER_IMAGE` to count it in the cost report. Install `fonts-noto-core` (the Dockerfiles do) or the overlay falls back to whatever font covers the script.
 - **Own-voice lines are not checked** by the speech model (no back-transcription) and cannot be shortened by the LLM; a recording longer than its slot is sped up to 1.2x at most and then trimmed at the next sentence, and the line is marked degraded.
 
 ## Cost and runtime

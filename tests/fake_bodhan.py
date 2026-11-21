@@ -39,6 +39,7 @@ class FakeBodhan:
         self.fail_langs = fail_langs or set()
         self.mt_log: list[str] = []
         self.tts_log: list[dict] = []     # every speech request body, to check voice/style reach the API
+        self.ocr_calls, self.ocr_requests, self.ocr_fail = 0, [], 0     # ocr_fail: answer the next N calls with 502
         self.client = httpx.Client(transport=httpx.MockTransport(self.handle), base_url="https://api.bodhan.ai")
 
     def handle(self, req: httpx.Request) -> httpx.Response:
@@ -67,10 +68,42 @@ class FakeBodhan:
                 self.done.add(("t", text))
                 dur = nominal * 0.35
             return httpx.Response(200, content=tone(dur, f), headers={"content-type": "audio/wav"})
+        if path == "/v1/chat/completions":
+            return self._ocr(json.loads(req.content))
         if path == "/v1/audio/transcriptions":
             self.calls["stt"] += 1
             return httpx.Response(200, json={"text": self._stt(req.content)})
         return httpx.Response(404, json={"error": {"message": "not found"}})
+
+    def _ocr(self, body: dict) -> httpx.Response:
+        """Finds bright text on a dark frame. Left half of the picture = one phrase, right half = another."""
+        import base64
+
+        from PIL import Image
+        self.ocr_calls += 1
+        self.ocr_requests.append({"model": body.get("model"), "max_tokens": body.get("max_tokens")})
+        if body.get("model") != "indic-ocr":
+            return httpx.Response(404, json={"error": {"message": "not found"}})
+        if self.ocr_fail > 0:
+            self.ocr_fail -= 1
+            return httpx.Response(502, json={"detail": "a block exceeded max_tokens"})
+        uri = body["messages"][0]["content"][0]["image_url"]["url"]
+        im = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("L")
+        a = np.asarray(im)
+        h, w = a.shape
+        blocks = []
+        for _name, x0, x1, text in (("L", 0, w // 2, "Revenue grew"), ("R", w // 2, w, "Open source")):
+            ys, xs = np.nonzero(a[:, x0:x1] > 200)
+            if len(xs) > 150:
+                blocks.append({"order": len(blocks), "label": "Text", "type": "Text", "conf": 0.93, "text": text,
+                               "bbox_xyxy": [float(xs.min() + x0), float(ys.min()), float(xs.max() + x0), float(ys.max())]})
+        if blocks:      # things that must never be translated
+            blocks.append({"order": len(blocks), "label": "Page-footer", "type": "PageFooter", "conf": 0.9, "text": "confidential",
+                           "bbox_xyxy": [5.0, float(h - 20), 90.0, float(h - 4)]})
+            blocks.append({"order": len(blocks) + 1, "label": "Picture", "type": "Picture", "conf": 0.9, "text": "",
+                           "bbox_xyxy": [200.0, 5.0, 300.0, 50.0]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "\n".join(b["text"] for b in blocks)}, "finish_reason": "stop"}],
+                                         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, "blocks": blocks})
 
     def _stt(self, content: bytes) -> str:
         a = content.find(b"RIFF")

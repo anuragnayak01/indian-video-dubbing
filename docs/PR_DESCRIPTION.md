@@ -29,7 +29,7 @@ Flow chart with retries, checks and decision points: [docs/design_notes.md](desi
 English only; any output containing Indic script is rejected. Tested with: `<LLM model name>` (fill in after the run).
 
 ## Bodhan models used
-Indic-Transcribe (hosted: source English and back-transcription), Indic-Translate (hosted: all translation, `codemix` with `--code-mixed`), Indic-Speak (hosted: all speech, the language's own recorded voices, optional `style`). Chunks are kept to 25 s.
+Indic-Transcribe (hosted: source English and back-transcription), Indic-Translate (hosted: all translation, `codemix` with `--code-mixed`), Indic-Speak (hosted: all speech, the language's own recorded voices, optional `style`), Indic-OCR (hosted, optional `--ocr`: on-screen text in sampled frames, translated and burned in). Chunks are kept to 25 s.
 
 ## Results
 `<link to demo outputs>` · Quality targets from `report.json`: `<fill in from the real run: sync %, speed range, length diff, LUFS, mean CER, misses and why>`.
@@ -38,7 +38,7 @@ Indic-Transcribe (hosted: source English and back-transcription), Indic-Translat
 `<link, 5 minutes or less>`
 
 ## Trade-offs and known limitations
-See [README limitations](../README.md#limitations-stated-honestly). In short: speaker split is a pitch heuristic; music under speech is lost; glossary enforcement is partial; QA thresholds need calibration on real output; no Indic-OCR.
+See [README limitations](../README.md#limitations-stated-honestly). In short: speaker split is a pitch heuristic; music under speech is lost; glossary enforcement is partial; QA thresholds need calibration on real output; on-screen text timing follows the frame-sampling interval.
 
 ## Cost and runtime
 `<fill in from report.json>`. Estimate: about ₹0.6 per video minute per language plus ₹0.10 per video minute once for the source.

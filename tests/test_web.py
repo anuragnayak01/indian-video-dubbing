@@ -105,8 +105,9 @@ def test_diagnose_reports_keys_and_statuses(client, monkeypatch):
     monkeypatch.setattr(server, "BodhanClient", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("speak: HTTP 404")))
     j = client.post("/api/diagnose").json()
     assert j["translate_key_same_as_transcribe"] is True and j["keys"]["translate"]["last4"] == "1234"
-    assert [t["status"] for t in j["tests"][:3]] == [404, 404, 404] and "error" in j["tests"][3]
-    assert j["tests"][2]["call"].startswith("transcribe")
+    assert [t["status"] for t in j["tests"][:3]] == [404, 404, 404] and j["tests"][2]["call"].startswith("transcribe")
+    assert j["tests"][3]["call"].startswith("ocr") and j["tests"][3]["status"] == 404 and j["ocr_key_set"] is True
+    assert "error" in j["tests"][-1]
 
 
 def test_diagnose_get_needs_query_token_and_post_needs_header(tmp_path, monkeypatch):
@@ -215,3 +216,28 @@ def test_job_uses_todays_concurrency_not_the_one_saved_with_the_project(client, 
     assert c.post(f"/api/projects/{pid}/rerun").status_code == 200
     wait(c, pid)
     assert seen[0] == 4 and seen[-1] == 1
+
+
+def test_onscreen_text_project_edit_and_hide(client, video_text):
+    c, _ = client
+    assert c.get("/api/config").json()["ocr_key"] is True
+    with open(video_text, "rb") as f:
+        pid = c.post("/api/projects", files={"file": ("t.mp4", f)}, data={"langs": "hi", "ocr": "true"}).json()["id"]
+    j = wait(c, pid)
+    assert j["job"]["state"] == "done" and j["report"]["onscreen"]["items"] == 2
+    d = c.get(f"/api/projects/{pid}/lang/hi").json()
+    assert [i["original"] for i in d["onscreen"]["items"]] == ["Revenue grew", "Open source"]
+    ep = f"/api/projects/{pid}/lang/hi/onscreen"
+    assert c.patch(f"{ep}/9", json={"hide": True}).status_code == 404
+    assert c.patch(f"{ep}/0", json={"text": "राजस्व बढ़ा"}).status_code == 200
+    wait(c, pid)
+    assert c.patch(f"{ep}/1", json={"hide": True}).status_code == 200
+    wait(c, pid)
+    d = c.get(f"/api/projects/{pid}/lang/hi").json()
+    rows = {i["id"]: i for i in d["onscreen"]["items"]}
+    assert rows[0]["translation"] == "राजस्व बढ़ा" and rows[1]["status"] == "hidden"      # the text edit survived the hide
+    assert d["overrides"]["o0"] == {"text": "राजस्व बढ़ा"} and d["overrides"]["o1"] == {"hide": True}
+    assert c.patch(f"{ep}/1", json={"hide": False}).status_code == 200
+    wait(c, pid)
+    assert {i["id"]: i for i in c.get(f"/api/projects/{pid}/lang/hi").json()["onscreen"]["items"]}[1]["status"] in ("ok", "tight")
+    assert c.post(f"/api/projects/{pid}/lang/hi/preview", json={"text": "x", "voice": "Kavya"}).status_code == 200

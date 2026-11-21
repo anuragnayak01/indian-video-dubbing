@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import audio, config, qa, segmentation, textutil, timing
+from . import audio, config, onscreen, qa, segmentation, textutil, timing
 from .bodhan import BodhanClient, BodhanError, Meter
 from .llm import Brain
 from .logs import log
@@ -31,6 +31,9 @@ class Options:
     src_lang: str = "en"
     style: str | None = None
     force: bool = False
+    ocr: bool = False            # translate on-screen text with Indic-OCR
+    ocr_interval: float = 2.0    # seconds between sampled frames
+    ocr_max_frames: int = 40     # upper bound on sampled frames (so on Indic-OCR calls)
     merge: bool = False          # partial re-run: keep other languages' entries in report.json
     extra: dict = field(default_factory=dict)
 
@@ -313,6 +316,47 @@ class LangRun:
             rec["notes"].append("recording_longer_than_slot_at_max_speed")
         return rec
 
+    # ---- on-screen text
+    def onscreen_overlays(self) -> tuple[list[dict], dict]:
+        """Translate each detected on-screen text and render its overlay. Returns (overlays, summary)."""
+        data = self.src.get("onscreen")
+        if not data or not data.get("items"):
+            return [], {"enabled": bool(data), "items": 0} if data is not None else {}
+        W, H = onscreen.video_size(self.opt.input)
+        font, font_note = onscreen.find_font(self.lang)
+        odir = self.work / "onscreen"
+        odir.mkdir(parents=True, exist_ok=True)
+        rows, overlays = [], []
+        for it in data["items"]:
+            ov = self.overrides.get(f"o{it['id']}", {})
+            row = {"id": it["id"], "start": it["start"], "end": it["end"], "bbox": it["bbox"], "original": it["text"],
+                   "label": it.get("label", ""), "hidden": bool(ov.get("hide")), "translation": "", "status": "ok"}
+            rows.append(row)
+            if row["hidden"]:
+                row["status"] = "hidden"
+                continue
+            try:
+                text = ov.get("text") or self.translate(it["text"])[0]
+                row["translation"] = text
+                info = onscreen.render_overlay(it, text, font, W, H, odir / f"{it['id']}.png")
+                overlays.append({**info, "start": it["start"], "end": it["end"]})
+                row["font_size"] = info["font_size"]
+                if info["overflow"]:
+                    row["status"] = "tight"
+            except Exception as e:          # one text failing must not remove the others
+                row["status"] = "failed"
+                row["error"] = str(e)[:160]
+                log("onscreen_item_failed", lang=self.lang, id=it["id"], error=str(e)[:200])
+        textutil.atomic_write(self.dir / f"onscreen.{self.lang}.json", json.dumps(
+            {"lang": self.lang, "font": font, "font_note": font_note, "video": [W, H], "items": rows}, ensure_ascii=False, indent=1))
+        n_ok = len(overlays)
+        summ = {"enabled": True, "items": len(rows), "burned_in": n_ok, "hidden": sum(r["hidden"] for r in rows),
+                "failed": sum(r["status"] == "failed" for r in rows), "font": font_note, "status": "ok"}
+        if font_note in ("no_font", "fallback_may_lack_glyphs"):
+            summ["warning"] = "no font for this script was found; install fonts-noto-core"
+        log("lang_stage", lang=self.lang, stage="onscreen", **{k: v for k, v in summ.items() if k != "warning"})
+        return overlays, summ
+
     # ---- whole language
     def run(self) -> dict:
         t0 = time.time()
@@ -331,7 +375,19 @@ class LangRun:
         mix_info = audio.render_mix(self.opt.input, dur, [(s["start"], s["end"]) for s in segs], clips,
                                     self.work / "mix.wav", self.work)
         out_video = self.dir / f"video.{self.lang}.mp4"
-        audio.mux(self.opt.input, self.work / "mix.wav", out_video, dur)
+        overlays, osum = self.onscreen_overlays()
+        try:
+            if overlays:
+                onscreen.mux(self.opt.input, self.work / "mix.wav", out_video, dur, overlays)
+            else:
+                audio.mux(self.opt.input, self.work / "mix.wav", out_video, dur)
+        except RuntimeError as e:
+            if not overlays:
+                raise
+            log("onscreen_mux_failed", lang=self.lang, error=str(e)[:300])
+            osum.update(status="overlay_failed", error=str(e)[:200], burned_in=0)
+            audio.mux(self.opt.input, self.work / "mix.wav", out_video, dur)        # the dub is never lost to an overlay problem
+        self.onscreen_summary = osum
         srt = timing.make_srt([(r["placed_start"] if "placed_start" in r else r["start"], r["end"],
                                 textutil.wrap_subtitle(r.get("translation", ""))) for r in recs if r.get("translation")])
         textutil.atomic_write(self.dir / f"subtitles.{self.lang}.srt", srt)
@@ -342,7 +398,10 @@ class LangRun:
         textutil.atomic_write(self.dir / f"segments.{self.lang}.json",
             json.dumps({"lang": self.lang, "label": config.LANGUAGES.get(self.lang, self.lang), "ai_dubbed": True,
                         "segments": recs, "skipped": self.src["skipped"]}, ensure_ascii=False, indent=1))
-        return self.summarize(recs, mix_info, out_dur, time.time() - t0)
+        res = self.summarize(recs, mix_info, out_dur, time.time() - t0)
+        if getattr(self, "onscreen_summary", None):
+            res["onscreen"] = self.onscreen_summary
+        return res
 
     def summarize(self, recs, mix_info, out_dur, secs) -> dict:
         dubbed = [r for r in recs if "placed_start" in r]
@@ -437,6 +496,18 @@ def run_pipeline(opt: Options, client: BodhanClient, brain: Brain) -> int:
     report["source"] = {"duration": src["duration"], "segments": len(src["segments"]), "grouping": src["grouping"],
                         "speakers": src["speakers"], "glossary_terms": len(src["glossary"]), "warnings": src["warnings"],
                         "seconds": src["seconds"]}
+    src["onscreen"] = None
+    if opt.ocr:
+        try:
+            src["onscreen"] = onscreen.extract(opt.input, client, work, src["duration"], src["sha"], opt.ocr_interval,
+                                               opt.ocr_max_frames, min(opt.concurrency, 2))
+            report["onscreen"] = {k: src["onscreen"][k] for k in ("frames", "ocr_calls", "interval", "skipped", "warnings")}
+            report["onscreen"]["items"] = len(src["onscreen"]["items"])
+        except Exception as e:     # on-screen text is an extra: never stop the dub for it
+            log("onscreen_failed", error=str(e)[:300])
+            report["onscreen"] = {"enabled": True, "error": str(e)[:300], "items": 0}
+            src["warnings"] = list(src.get("warnings") or []) + [f"on-screen text skipped: {str(e)[:200]}"]
+            report["source"]["warnings"] = src["warnings"]
     meters = {}
 
     def do_lang(lang):

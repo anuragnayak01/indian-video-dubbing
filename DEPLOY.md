@@ -10,7 +10,7 @@ git remote add origin https://github.com/<you>/<repo>.git && git push -u origin 
 
 ## 2. Backend on Render
 1. Render → New → **Blueprint** → pick the repo (uses `render.yaml`, builds `Dockerfile.web` with ffmpeg).
-2. Fill the prompted env vars: the three `BODHAN_*_KEY`, optional `LLM_*`, and `DUB_CORS_ORIGINS` (set after step 3: `https://<your-app>.vercel.app`, no trailing slash).
+2. Fill the prompted env vars: the three `BODHAN_*_KEY` (plus an optional `BODHAN_OCR_KEY` if you want on-screen text translated), optional `LLM_*`, and `DUB_CORS_ORIGINS` (set after step 3: `https://<your-app>.vercel.app`, no trailing slash).
 3. `DUB_ACCESS_TOKEN` is generated for you: copy it from the service's Environment tab.
 4. Check `https://<service>.onrender.com/api/health` returns `{"ok":true,"auth":true}`.
 

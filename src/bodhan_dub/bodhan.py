@@ -1,12 +1,14 @@
 """Client for the three Bodhan models used by the pipeline. Every ASR, MT and TTS call goes through here.
 
 - Indic-Transcribe: POST /v1/audio/transcriptions   (multipart, <=30 s of audio, returns {"text"})
+- Indic-OCR:        POST /v1/chat/completions (model indic-ocr, image as base64 data URI, returns blocks with bbox)
 - Indic-Translate:  POST /translate (documented) with POST /v1/chat/completions as the fallback on 404
 - Indic-Speak:      POST /v1/audio/speech           (JSON, returns PCM16 24 kHz mono WAV)
 
 Retries with exponential backoff on 429/5xx, a global concurrency limit, an on-disk cache so
 reruns do not repeat paid calls, and per-model cost metering.
 """
+import base64
 import hashlib
 import json
 import os
@@ -45,7 +47,7 @@ class Meter:
     def __init__(self):
         self.lock = threading.Lock()
         self.data = {m: {"calls": 0, "cache_hits": 0, "retries": 0, "seconds": 0.0, "cost_inr": 0.0}
-                     for m in ("transcribe", "translate", "speak")}
+                     for m in ("transcribe", "translate", "speak", "ocr")}
 
     def add(self, model: str, **kw):
         with self.lock:
@@ -240,6 +242,45 @@ class BodhanClient:
         self.meter.add("translate", cost_inr=tokens / 10000 * config.PRICE_TRANSLATE_PER_10K_TOKENS)
         if not out["truncated"]:  # never cache a cut-off translation
             self._cput(key, "json", json.dumps(out, ensure_ascii=False).encode())
+        return out
+
+    # ---- Indic-OCR ----
+    def ocr(self, png: bytes, max_tokens: int = 2048) -> dict:
+        """One whole image in, reading-ordered blocks out: {"text", "blocks": [{order,label,type,bbox,conf,text}]}.
+        POST /v1/chat/completions, model indic-ocr, image as a base64 data URI (PNG or JPEG only)."""
+        if not self.keys.ocr:
+            raise BodhanError("ocr: BODHAN_OCR_KEY is not set (create a key for Indic-OCR in the Bodhan console)")
+        key = self._ck("ocr", hashlib.sha256(png).hexdigest())
+        hit = self._cget(key, "json")
+        if hit:
+            self.meter.add("ocr", cache_hits=1)
+            return json.loads(hit)
+        uri = "data:image/png;base64," + base64.b64encode(png).decode()
+
+        def call(tokens):
+            body = {"model": "indic-ocr", "max_tokens": tokens,
+                    "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri}}]}]}
+            return self._request("ocr", "ocr", lambda: self.http.post(
+                f"{self.base}/v1/chat/completions", headers=self._auth(self.keys.ocr), json=body))
+
+        try:
+            r = call(max_tokens)
+        except BodhanError as e:
+            if e.status != 502:
+                raise
+            log("ocr_retry_more_tokens", detail=str(e)[:160])      # a block was longer than max_tokens (e.g. a big table)
+            r = call(max_tokens * 2)
+        j = r.json()
+        try:
+            text = (j["choices"][0]["message"]["content"] or "").strip()
+        except (KeyError, IndexError, TypeError):
+            text = ""
+        blocks = [{"order": int(b.get("order", i)), "label": str(b.get("label", "")), "type": str(b.get("type", "")),
+                   "bbox": [float(v) for v in (b.get("bbox_xyxy") or [0, 0, 0, 0])][:4], "conf": float(b.get("conf", 0) or 0),
+                   "text": str(b.get("text") or "")} for i, b in enumerate(j.get("blocks") or [])]
+        out = {"text": text, "blocks": blocks}
+        self.meter.add("ocr", cost_inr=config.PRICE_OCR_PER_IMAGE)
+        self._cput(key, "json", json.dumps(out, ensure_ascii=False).encode())
         return out
 
     # ---- Indic-Speak ----
