@@ -28,13 +28,24 @@ class BodhanError(RuntimeError):
         self.status, self.code = status, code
 
 
-def hint(status: int | None, model: str) -> str:
+def is_budget_error(text: str) -> bool:
+    """Bodhan answers HTTP 429 both for rate limits and for a spent budget ("ExceededBudget ... over budget").
+    The second one never clears by waiting, so it must not be retried."""
+    t = (text or "").lower()
+    return "exceededbudget" in t or "budget_exceeded" in t or "over budget" in t
+
+
+def hint(status: int | None, model: str, body: str = "") -> str:
     """Plain-English next step for the errors people actually hit."""
     if status in (401, 403):
         return f" | Hint: the key was rejected. Check it is correct and was created for {model} (each Bodhan key serves one model)."
     if status == 404:
         return (f" | Hint: route not found for this key. Most often the key was not created for {model} "
                 "(each Bodhan key serves one model), or BODHAN_BASE_URL is wrong.")
+    if status == 429 and is_budget_error(body):
+        return (" | Hint: this is not a rate limit. The Bodhan account behind this key has used up its budget (see Spend and Budget above), "
+                "so every call is refused until the budget is raised. Waiting or lowering concurrency will not help: ask Bodhan to "
+                "top up or raise the budget in the console, then run again. Cached results from earlier runs are reused and cost nothing.")
     if status == 429:
         return (" | Hint: Bodhan is limiting requests for this key: above its request-per-minute or parallel limit (the text before this hint is "
                 "Bodhan's own reply). Retries count against that limit, so the app now spaces calls to the limit Bodhan reports and waits "
@@ -192,13 +203,16 @@ class BodhanClient:
                     self._relax(model)
                     log("api_call", api=label, status=200, seconds=round(time.time() - t0, 2))
                     return r
+                if r.status_code == 429 and is_budget_error(r.text):
+                    log("api_error", api=label, status=429, body=r.text[:300], reason="budget_exceeded", request_id=r.headers.get("x-request-id", ""))
+                    raise BodhanError(f"{label}: HTTP 429: {r.text[:300]}{hint(429, 'indic-' + model, r.text)}", 429, "budget_exceeded")
                 if r.status_code in (429, 500, 502, 503, 504):
                     ra = float(r.headers.get("retry-after", 0) or 0)
                     # a 429 means the minute's budget is spent: wait for it to refill instead of retrying quickly
                     wait = min(90.0, ra or (self.backoff * 2 ** (attempt + 1) if r.status_code == 429 else min(30.0, self.backoff * 2 ** (attempt - 1))))
                     body = r.text[:200].replace("\n", " ")
                     detail = f": {body}" if body and r.status_code == 429 else ""
-                    last = BodhanError(f"{label}: HTTP {r.status_code}{detail}{hint(r.status_code, 'indic-' + model)}", r.status_code)
+                    last = BodhanError(f"{label}: HTTP {r.status_code}{detail}{hint(r.status_code, 'indic-' + model, r.text)}", r.status_code)
                     self.meter.add(model, retries=1)
                     if r.status_code == 429:
                         self._slow_down(model)

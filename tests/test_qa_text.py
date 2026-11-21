@@ -158,3 +158,25 @@ def test_client_learns_bodhans_rate_limit_headers_and_spaces_its_calls(monkeypat
     # sleep is mocked, so time stands still: the 2nd call waits one slot, the 3rd waits two
     assert len(sleeps) == 2 and abs(sleeps[0] - 6.9) < 0.1 and abs(sleeps[1] - 13.8) < 0.1
     assert c._gate("transcribe").limit == 4                        # other models keep their own limits
+
+
+def test_budget_exceeded_429_is_not_retried_and_is_explained():
+    import httpx
+
+    from bodhan_dub.bodhan import BodhanClient, BodhanError
+    from bodhan_dub.config import Keys
+    n = {"c": 0}
+    body = {"error": {"message": "ExceededBudget: User=u over budget. Spend=10.19, Budget=10.0", "type": "budget_exceeded", "code": "429"}}
+
+    def handler(req):
+        n["c"] += 1
+        return httpx.Response(429, json=body)
+
+    c = BodhanClient(Keys("t", "m", "s"), None, max_attempts=4, backoff=0.01, http=httpx.Client(transport=httpx.MockTransport(handler)))
+    try:
+        c._request("translate", "translate", lambda: c.http.post("http://x/translate"))
+        raise AssertionError("should fail")
+    except BodhanError as e:
+        assert e.status == 429 and e.code == "budget_exceeded"
+        assert "over budget" in str(e) and "not a rate limit" in str(e) and "DUB_CONCURRENCY" not in str(e)
+    assert n["c"] == 1                                   # waiting cannot fix a spent budget, so no retries
