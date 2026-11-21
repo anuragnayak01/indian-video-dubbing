@@ -136,5 +136,25 @@ def test_429_shows_bodhans_own_message_and_paces_after_it():
         raise AssertionError("should fail")
     except BodhanError as e:
         assert e.status == 429 and "Too many concurrent requests" in str(e) and "DUB_CONCURRENCY=1" in str(e)
-    assert n["c"] == 4                                  # 429 gets twice the attempts of other failures
+    assert n["c"] == 2                                  # retries count against Bodhan's request limit: no extra attempts
     assert c.pace["transcribe"] > 0                     # and the client slowed itself down
+
+
+def test_client_learns_bodhans_rate_limit_headers_and_spaces_its_calls(monkeypatch):
+    import httpx
+
+    from bodhan_dub import bodhan
+    from bodhan_dub.bodhan import BodhanClient
+    from bodhan_dub.config import Keys
+    sleeps = []
+    monkeypatch.setattr(bodhan.time, "sleep", lambda s: sleeps.append(s))
+    h = {"x-ratelimit-limit-requests": "10", "x-ratelimit-limit-parallel-requests": "1"}
+    c = BodhanClient(Keys("t", "m", "s"), None, max_concurrency=4, backoff=1.0,
+                     http=httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={}, headers=h))))
+    for _ in range(3):
+        c._request("translate", "translate", lambda: c.http.post("http://x/translate"))
+    assert abs(c.floor["translate"] - 6.9) < 0.01                  # 10 per minute -> one request every 6.9 s (with 15% headroom)
+    assert c._gate("translate").limit == 1                         # the parallel limit shrinks the user's concurrency of 4
+    # sleep is mocked, so time stands still: the 2nd call waits one slot, the 3rd waits two
+    assert len(sleeps) == 2 and abs(sleeps[0] - 6.9) < 0.1 and abs(sleeps[1] - 13.8) < 0.1
+    assert c._gate("transcribe").limit == 4                        # other models keep their own limits

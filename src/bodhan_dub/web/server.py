@@ -208,7 +208,8 @@ def diagnose(request: Request):
             r = httpx.post(base + path, headers={"Authorization": f"Bearer {keys.translate.strip()}"}, timeout=30,
                            json=bodhan_mod.BodhanClient._translate_body(path, "Hello", "hi", "native"))
             out["tests"].append({"call": "translate POST " + path, "status": r.status_code, "body": r.text[:300],
-                                 "request_id": r.headers.get("x-request-id", "")})
+                                 "request_id": r.headers.get("x-request-id", ""),
+                                 "headers": {k: v for k, v in r.headers.items() if k.lower().startswith(("retry-after", "x-ratelimit"))}})
         except Exception as e:
             out["tests"].append({"call": "translate POST " + path, "error": f"{type(e).__name__}: {e}"[:200]})
     # Which key actually serves translate? Try each variable's key on /translate (a few tokens each).

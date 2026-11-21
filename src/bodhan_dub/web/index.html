@@ -299,7 +299,9 @@ async function runDiag(){const o=$('#diagout');o.innerHTML='<p class="mut" style
  const tr=d.tests.find(t=>t.call.startsWith('transcribe')),trok=tr&&tr.status==200
  rows.push(li(trok?'ok':'no',trok?'Transcribe works':'Transcribe fails',trok?'':(tr?.status?`HTTP ${tr.status}: ${esc(tr.body||'')}`+(tr.headers&&Object.keys(tr.headers).length?' · '+esc(JSON.stringify(tr.headers)):''):esc(tr?.error||''))+(tr?.status==429?' · Bodhan itself is refusing this key. Read its message above, check credit and per-minute limits in the console, and keep DUB_CONCURRENCY=1.':'')))
  const tt=d.tests.filter(t=>t.call.startsWith('translate')),good=tt.find(t=>t.status==200)
- rows.push(li(good?'ok':'no',good?'Translate works':'Translate fails',good?'':tt.map(t=>`${esc(t.call)} → ${t.status??esc(t.error)}`).join(' · ')+'. The key is probably not an indic-translate key.'))
+ const lim=t=>{const h=t?.headers||{},a=h['x-ratelimit-limit-requests'],b=h['x-ratelimit-limit-parallel-requests'];return a||b?`Limits for this key: ${a||'?'} requests per minute, ${b||'?'} at the same time. The app spaces its calls to this.`:''}
+ const rl=tt.find(t=>t.status==429)
+ rows.push(li(good?'ok':rl?'wt':'no',good?'Translate works':rl?'Translate is rate limited right now':'Translate fails',good?lim(good):rl?esc(rl.body||'')+' '+lim(rl)+' Wait a minute and test again; retries count against the limit.':tt.map(t=>`${esc(t.call)} → ${t.status??esc(t.error)}`).join(' · ')+'. The key is probably not an indic-translate key.'))
  const alt=Object.entries(d.translate_with_each_key||{}).find(([k,v])=>v.status==200&&k!='BODHAN_TRANSLATE_KEY')
  if(!good&&alt)rows.push(li('no','Keys look mixed up',`The key in ${esc(alt[0])} is the one that works for translate. Put it in BODHAN_TRANSLATE_KEY.`))
  const oc=d.tests.find(t=>t.call.startsWith('ocr'))

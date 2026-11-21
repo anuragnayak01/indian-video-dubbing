@@ -36,8 +36,9 @@ def hint(status: int | None, model: str) -> str:
         return (f" | Hint: route not found for this key. Most often the key was not created for {model} "
                 "(each Bodhan key serves one model), or BODHAN_BASE_URL is wrong.")
     if status == 429:
-        return (" | Hint: Bodhan is limiting requests for this key (the text before this hint is Bodhan's own reply). If your balance is "
-                "fine, the key is being rate limited: set DUB_CONCURRENCY=1 on Render and rerun. The app also slows itself after a 429.")
+        return (" | Hint: Bodhan is limiting requests for this key: above its request-per-minute or parallel limit (the text before this hint is "
+                "Bodhan's own reply). Retries count against that limit, so the app now spaces calls to the limit Bodhan reports and waits "
+                "for it to refill. If it keeps happening set DUB_CONCURRENCY=1 and ask Bodhan to raise the limit.")
     return ""
 
 
@@ -61,12 +62,37 @@ class Meter:
         return out
 
 
+class Gate:
+    """A concurrency limit whose size can change at run time (the API reports its own parallel-request limit in a header)."""
+
+    def __init__(self, limit: int):
+        self.limit, self.active, self.cv = max(1, limit), 0, threading.Condition()
+
+    def set_limit(self, n: int):
+        with self.cv:
+            self.limit = max(1, n)
+            self.cv.notify_all()
+
+    def __enter__(self):
+        with self.cv:
+            while self.active >= self.limit:
+                self.cv.wait(timeout=1.0)
+            self.active += 1
+
+    def __exit__(self, *a):
+        with self.cv:
+            self.active -= 1
+            self.cv.notify_all()
+
+
 class BodhanClient:
     def __init__(self, keys: config.Keys, cache_dir: Path | None, max_concurrency: int = 4,
                  meter: Meter | None = None, base_url: str | None = None, max_attempts: int = 5,
                  backoff: float = 1.5, http: httpx.Client | None = None):
         self.keys, self.cache_dir = keys, cache_dir
-        self.sem = threading.BoundedSemaphore(max_concurrency)
+        self.max_conc = max(1, max_concurrency)
+        self.gates: dict[str, Gate] = {}
+        self.floor: dict[str, float] = {}      # minimum seconds between requests, learnt from the API's own rate-limit headers
         self.meter = meter or Meter()
         self.base = (base_url or config.BASE_URL).rstrip("/")
         self.max_attempts, self.backoff = max_attempts, backoff
@@ -100,6 +126,34 @@ class BodhanClient:
             (self.cache_dir / f"{key}.{ext}").write_bytes(data)
 
     # ---- http with retries ----
+    def _gate(self, model: str) -> Gate:
+        with self.plock:
+            return self.gates.setdefault(model, Gate(self.max_conc))
+
+    def _learn_limits(self, model: str, r):
+        """The docs: every response carries x-ratelimit-limit-requests and x-ratelimit-limit-parallel-requests, and
+        "retries count against the request limit". So spend the limit evenly instead of bursting and retrying."""
+        try:
+            rpm = int(r.headers.get("x-ratelimit-limit-requests") or 0)
+            par = int(r.headers.get("x-ratelimit-limit-parallel-requests") or 0)
+        except ValueError:
+            return
+        with self.plock:
+            changed = False
+            if rpm > 0:
+                fl = 60.0 / rpm * 1.15                    # 15% headroom; the header is read as requests per minute
+                if abs(self.floor.get(model, 0) - fl) > 1e-6:
+                    self.floor[model], changed = fl, True
+                    self.pace[model] = max(self.pace.get(model, self.base_pace), fl)
+                    self.next_at[model] = max(self.next_at.get(model, 0.0), time.monotonic() + fl)   # the call that just returned used a slot
+            if par > 0:
+                g = self.gates.setdefault(model, Gate(self.max_conc))
+                if g.limit != min(par, self.max_conc):
+                    g.set_limit(min(par, self.max_conc))
+                    changed = True
+        if changed:
+            log("api_limits", api=model, requests_per_minute=rpm or "?", parallel=par or "?", min_interval_s=round(self.floor.get(model, 0), 2))
+
     def _pace_wait(self, model: str):
         iv = self.pace.get(model, self.base_pace)
         if iv <= 0:
@@ -115,33 +169,33 @@ class BodhanClient:
         if self.backoff <= 0:
             return
         with self.plock:
-            self.pace[model] = min(15.0, max(self.pace.get(model, self.base_pace) * 2, self.backoff))
+            self.pace[model] = min(30.0, max(self.pace.get(model, self.base_pace) * 2, self.backoff, self.floor.get(model, 0.0)))
 
     def _relax(self, model: str):
         with self.plock:
             cur = self.pace.get(model)
             if cur:
-                self.pace[model] = cur * 0.8 if cur * 0.8 > max(self.base_pace, 0.2) else self.base_pace
+                low = max(self.base_pace, self.floor.get(model, 0.0))
+                self.pace[model] = max(low, cur * 0.8)
 
     def _request(self, model: str, label: str, fn):
         last = None
-        # 429 gets twice as many attempts as other failures: it is the one that clears if we wait.
-        limit = self.max_attempts * 2 if self.max_attempts > 1 else 1
-        for attempt in range(1, limit + 1):
-            if attempt > self.max_attempts and not (last and last.status == 429):
-                break
+        for attempt in range(1, self.max_attempts + 1):       # retries count against the API's request limit: no extra 429 attempts
             t0 = time.time()
             try:
                 self._pace_wait(model)
-                with self.sem:
+                with self._gate(model):
                     r = fn()
+                self._learn_limits(model, r)
                 self.meter.add(model, calls=1, seconds=time.time() - t0)
                 if r.status_code == 200:
                     self._relax(model)
                     log("api_call", api=label, status=200, seconds=round(time.time() - t0, 2))
                     return r
                 if r.status_code in (429, 500, 502, 503, 504):
-                    wait = min(60.0, float(r.headers.get("retry-after", 0) or 0) or min(30.0, self.backoff * 2 ** (attempt - 1)))
+                    ra = float(r.headers.get("retry-after", 0) or 0)
+                    # a 429 means the minute's budget is spent: wait for it to refill instead of retrying quickly
+                    wait = min(90.0, ra or (self.backoff * 2 ** (attempt + 1) if r.status_code == 429 else min(30.0, self.backoff * 2 ** (attempt - 1))))
                     body = r.text[:200].replace("\n", " ")
                     detail = f": {body}" if body and r.status_code == 429 else ""
                     last = BodhanError(f"{label}: HTTP {r.status_code}{detail}{hint(r.status_code, 'indic-' + model)}", r.status_code)
@@ -188,8 +242,8 @@ class BodhanClient:
         return text
 
     # ---- Indic-Translate ----
-    # Documented route first (POST /translate). The OpenAI-compatible POST /v1/chat/completions is the second route, used
-    # if /translate answers 404 for this key. Whichever works is remembered for the rest of the run.
+    # Documented route first (POST /translate; the docs say to prefer it). The OpenAI-compatible POST /v1/chat/completions is
+    # only the fallback if /translate answers 404 for this key. Whichever works is remembered for the rest of the run.
     TRANSLATE_ROUTES = ("/translate", "/v1/chat/completions")
 
     @staticmethod
