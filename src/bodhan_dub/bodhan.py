@@ -2,7 +2,7 @@
 
 - Indic-Transcribe: POST /v1/audio/transcriptions   (multipart, <=30 s of audio, returns {"text"})
 - Indic-OCR:        POST /v1/chat/completions (model indic-ocr, image as base64 data URI, returns blocks with bbox)
-- Indic-Translate:  POST /translate (documented) with POST /v1/chat/completions as the fallback on 404
+- Indic-Translate:  POST /v1/chat/completions first (live path); POST /translate only as fallback
 - Indic-Speak:      POST /v1/audio/speech           (JSON, returns PCM16 24 kHz mono WAV)
 
 Retries with exponential backoff on 429/5xx, a global concurrency limit, an on-disk cache so
@@ -37,7 +37,8 @@ def hint(status: int | None, model: str) -> str:
                 "(each Bodhan key serves one model), or BODHAN_BASE_URL is wrong.")
     if status == 429:
         return (" | Hint: Bodhan is limiting requests for this key (the text before this hint is Bodhan's own reply). If your balance is "
-                "fine, the key is being rate limited: set DUB_CONCURRENCY=1 on Render and rerun. The app also slows itself after a 429.")
+                "fine, the key is being rate limited: set DUB_CONCURRENCY=1 and BODHAN_MIN_INTERVAL=2 on Render and rerun. "
+                "The app also slows itself after a 429.")
     return ""
 
 
@@ -70,9 +71,10 @@ class BodhanClient:
         self.meter = meter or Meter()
         self.base = (base_url or config.BASE_URL).rstrip("/")
         self.max_attempts, self.backoff = max_attempts, backoff
-        # Pacing: minimum seconds between request starts per model. Starts at BODHAN_MIN_INTERVAL (default 0) and
-        # doubles after each 429 (up to 15 s), shared by every thread, then relaxes after successes.
-        self.base_pace = float(os.environ.get("BODHAN_MIN_INTERVAL", "0") or 0)
+        # Pacing: minimum seconds between request starts per model.
+        # Default 1.5s (was 0) so free-tier / low RPM keys do not immediately 429.
+        # Override with BODHAN_MIN_INTERVAL=0 for full speed when your quota allows it.
+        self.base_pace = float(os.environ.get("BODHAN_MIN_INTERVAL", "1.5") or 0)
         self.pace, self.next_at, self.plock = {}, {}, threading.Lock()
         self.http = http or httpx.Client(timeout=httpx.Timeout(120, connect=15))
         if cache_dir:
@@ -188,14 +190,18 @@ class BodhanClient:
         return text
 
     # ---- Indic-Translate ----
-    # Documented route first (POST /translate). The OpenAI-compatible POST /v1/chat/completions is the second route, used
-    # if /translate answers 404 for this key. Whichever works is remembered for the rest of the run.
-    TRANSLATE_ROUTES = ("/translate", "/v1/chat/completions")
+    # Live path first: /v1/chat/completions (the dedicated /translate currently returns 404).
+    # Order can be overridden with BODHAN_TRANSLATE_PATH=/v1/chat/completions or /translate.
+    TRANSLATE_ROUTES = ("/v1/chat/completions", "/translate")
 
     @staticmethod
     def _translate_body(path: str, text: str, lang: str, script: str) -> dict:
         if path.endswith("/chat/completions"):
-            body = {"model": "indic-translate", "messages": [{"role": "user", "content": text}], "target_language_code": lang}
+            body = {
+                "model": "indic-translate",
+                "messages": [{"role": "user", "content": text}],
+                "target_language_code": lang,
+            }
             if script != "native":
                 body["target_script"] = script
             return body
@@ -237,7 +243,7 @@ class BodhanClient:
         except (KeyError, IndexError, TypeError):
             content = (j.get("translation") or "").strip()
         use = j.get("usage") or {}
-        tokens = use.get("output_tokens") or use.get("completion_tokens") or max(1, len(content) // 2)
+        tokens = use.get("completion_tokens") or use.get("output_tokens") or max(1, len(content) // 2)
         out = {"text": content, "truncated": bool(j.get("truncated")), "tokens": tokens}
         self.meter.add("translate", cost_inr=tokens / 10000 * config.PRICE_TRANSLATE_PER_10K_TOKENS)
         if not out["truncated"]:  # never cache a cut-off translation
